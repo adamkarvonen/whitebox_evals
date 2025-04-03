@@ -60,7 +60,7 @@ MODEL_CONFIGS = {
             50: {"layer": 20},
             75: {"layer": 30},
         },
-        "batch_size": 8,
+        "batch_size": 6,
     },
 }
 

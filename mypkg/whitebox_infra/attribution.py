@@ -114,6 +114,7 @@ def compute_attributions(
     use_stop_gradient: bool = False,
     verbose: bool = False,
     ignore_bos: bool = True,
+    padding_side: str = "left",
 ) -> dict[int, dict[str, torch.Tensor]]:
     """
     Runs a forward/backward pass on `transformers_model` using the given `sae`
@@ -142,6 +143,8 @@ def compute_attributions(
     assert len(chosen_layers) == 1, (
         "Only one layer is supported for now. Stop gradients require pass through gradients (See sparse feature circuits appendix)"
     )
+
+    assert padding_side in ["left", "right"]
 
     # Make sure gradients are enabled for model parameters
     for param in transformers_model.parameters():
@@ -211,16 +214,25 @@ def compute_attributions(
         # Forward pass
         output_logits = transformers_model(**model_inputs).logits
 
-        seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-        answer_logits = output_logits[
-            torch.arange(output_logits.shape[0]),
-            seq_lengths_B,
-            :,
-        ]
+        if padding_side == "right":
+            seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
+            answer_logits = output_logits[
+                torch.arange(output_logits.shape[0]),
+                seq_lengths_B,
+                :,
+            ]
+        elif padding_side == "left":
+            answer_logits = output_logits[
+                :,
+                -1,
+                :,
+            ]
         loss = loss_fn(answer_logits, labels)
         loss.backward()
 
         if verbose:
+            model_name = transformers_model.__class__.__name__
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
             view_outputs(tokenizer, model_inputs["input_ids"], answer_logits)
 
     finally:
@@ -248,11 +260,23 @@ def compute_attributions(
             )
 
             if ignore_bos:
-                encoded_acts_BLF[:, 0, :] = 0.0
-                residual_BLD[:, 0, :] = 0.0
+                if padding_side == "right":
+                    encoded_acts_BLF[:, 0, :] = 0.0
+                    residual_BLD[:, 0, :] = 0.0
+                elif padding_side == "left":
+                    bos_mask = (
+                        model_inputs["attention_mask"].cumsum(dim=1) == 1
+                    )  # shape [B, L], True where the first 1 occurs
+                    # Now zero out the first attended token in each sequence
+                    encoded_acts_BLF[bos_mask] = 0.0
+                    residual_BLD[bos_mask] = 0.0
 
             node_effects_BLF = encoded_acts_BLF * grad_x_dot_decoder_BLF * -1
             error_effects_BLD = residual_BLD * x_grad_BLD * -1
+
+            node_effects_BLF *= model_inputs["attention_mask"][:, :, None]
+            error_effects_BLD *= model_inputs["attention_mask"][:, :, None]
+            encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
 
             # Store everything
             results[layer_idx] = {

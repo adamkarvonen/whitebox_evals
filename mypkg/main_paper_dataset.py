@@ -33,10 +33,7 @@ from mypkg.pipeline.infra.hiring_bias_prompts import (
     filter_anthropic_df,
     modify_anthropic_filled_templates,
 )
-from mypkg.pipeline.infra.model_inference import (
-    run_model_inference_openrouter,
-    run_model_inference_transformers,
-)
+import mypkg.pipeline.infra.model_inference as model_inference
 import mypkg.whitebox_infra.model_utils as model_utils
 
 OPENROUTER_NAME_LOOKUP = {
@@ -238,6 +235,11 @@ async def main():
         help="Whether to use GPU inference",
     )
     parser.add_argument(
+        "--gpu_forward_pass",
+        action="store_true",
+        help="Whether to use GPU forward pass",
+    )
+    parser.add_argument(
         "--perform_ablations",
         action="store_true",
         help="Whether to perform ablation experiments",
@@ -380,21 +382,28 @@ async def main():
         gc.collect()
         torch.cuda.empty_cache()
 
-        if args.gpu_inference:
-            results = run_model_inference_transformers(
+        if args.gpu_forward_pass:
+            results = model_inference.run_single_forward_pass_transformers(
                 prompts, model_name, batch_size=batch_size
             )
         elif args.perform_ablations:
-            results = run_model_inference_transformers(
+            results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
                 batch_size=batch_size,
                 ablation_features=torch.tensor(model_features[model_name]),
             )
+        elif args.gpu_inference:
+            results = model_inference.run_inference_transformers(
+                prompts,
+                model_name,
+                batch_size=batch_size,
+                max_new_tokens=max_completion_tokens,
+            )
         else:
             if model_name in OPENROUTER_NAME_LOOKUP:
                 model_name = OPENROUTER_NAME_LOOKUP[model_name]
-            results = await run_model_inference_openrouter(
+            results = await model_inference.run_model_inference_openrouter(
                 prompts, model_name, max_completion_tokens=max_completion_tokens
             )
             gc.collect()

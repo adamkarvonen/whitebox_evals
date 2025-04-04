@@ -95,11 +95,12 @@ async def run_model_inference_openrouter(
 
 
 @torch.inference_mode()
-def run_model_inference_transformers(
+def run_inference_transformers(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     model_name: str,
     batch_size: int = 64,
     ablation_features: Optional[torch.Tensor] = None,
+    max_new_tokens: int = 200,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     dtype = torch.bfloat16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -142,13 +143,81 @@ def run_model_inference_transformers(
             "attention_mask": attention_mask,
         }
 
+        response = model.generate(**model_inputs, max_new_tokens=max_new_tokens)
+        response = response[:, input_ids.shape[1] :]
+        response = tokenizer.batch_decode(response, skip_special_tokens=False)
+
+        for i, idx in enumerate(idx_batch):
+            prompt_dicts[idx].response = response[i]
+
+    return prompt_dicts
+
+
+@torch.inference_mode()
+def run_single_forward_pass_transformers(
+    prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
+    model_name: str,
+    batch_size: int = 64,
+    ablation_features: Optional[torch.Tensor] = None,
+    padding_side: str = "left",
+) -> list[hiring_bias_prompts.ResumePromptResult]:
+    assert padding_side in ["left", "right"]
+
+    dtype = torch.bfloat16
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device_map="auto",
+        # attn_implementation="flash_attention_2",  # FlashAttention2 doesn't support right padding with mistral
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    original_prompts = [p.prompt for p in prompt_dicts]
+
+    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
+    dataloader = data_utils.create_simple_dataloader(
+        formatted_prompts,
+        [0] * len(formatted_prompts),
+        model_name,
+        device,
+        batch_size=batch_size,
+        max_length=8192,
+    )
+
+    if ablation_features is not None:
+        sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
+        encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(
+            ablation_features, sae
+        )
+        scales = [0.0] * len(encoder_vectors)
+        ablation_hook = get_conditional_clamping_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+        submodule = model_utils.get_submodule(model, sae.hook_layer)
+        submodule.register_forward_hook(ablation_hook)
+
+    for batch in tqdm(dataloader, desc="Processing prompts"):
+        input_ids, attention_mask, labels, idx_batch = batch
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
         logits = model(**model_inputs).logits
-        seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-        answer_logits_BV = logits[
-            torch.arange(logits.shape[0]),
-            seq_lengths_B,
-            :,
-        ]
+        if padding_side == "right":
+            seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
+            answer_logits_BV = logits[
+                torch.arange(logits.shape[0]),
+                seq_lengths_B,
+                :,
+            ]
+        elif padding_side == "left":
+            answer_logits_BV = logits[
+                :,
+                -1,
+                :,
+            ]
         answer_logits_B = torch.argmax(answer_logits_BV, dim=-1)
         predicted_tokens = tokenizer.batch_decode(answer_logits_B.unsqueeze(-1))
 

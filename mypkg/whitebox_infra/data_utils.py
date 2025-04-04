@@ -86,6 +86,7 @@ def create_simple_dataloader(
     max_length: int = 1024,
     shuffle: bool = False,
     sort_by_length: bool = True,
+    padding_side: str = "left",
 ):
     """
     Create a PyTorch DataLoader from lists of texts and corresponding labels with dynamic padding.
@@ -103,6 +104,8 @@ def create_simple_dataloader(
     Returns:
         A PyTorch DataLoader with dynamically padded batches.
     """
+
+    assert padding_side in ["left", "right"]
 
     assert len(texts) == len(labels)
 
@@ -151,10 +154,18 @@ def create_simple_dataloader(
         idx_batch = []
         for input_ids, attention_mask, label, idx in batch:
             pad_length = max_len - len(input_ids)
-            # Pad the input_ids with the pad_token_id
-            padded_input_ids.append(input_ids + [tokenizer.pad_token_id] * pad_length)
-            # Pad the attention mask with 0's.
-            padded_attention_masks.append(attention_mask + [0] * pad_length)
+            if padding_side == "right":
+                padded_input_ids.append(
+                    input_ids + [tokenizer.pad_token_id] * pad_length
+                )
+                padded_attention_masks.append(attention_mask + [0] * pad_length)
+            elif padding_side == "left":
+                padded_input_ids.append(
+                    [tokenizer.pad_token_id] * pad_length + input_ids
+                )
+                padded_attention_masks.append([0] * pad_length + attention_mask)
+            else:
+                raise ValueError(f"Invalid padding side: {padding_side}")
             labels_batch.append(label)
             idx_batch.append(idx)
         return (
@@ -171,55 +182,6 @@ def create_simple_dataloader(
     )
 
     return dataloader
-
-
-# def load_or_create_dataset(
-#     dataset_name: str,
-#     profession_ids: list[int],
-#     use_gender_question: bool,
-#     min_count: int = 100,
-#     cache_file: str = "dataset_cache.pkl",
-# ):
-#     """
-#     Loads dataset from cache if it exists, otherwise creates and caches it.
-
-#     Args:
-#         train_df: Training DataFrame
-#         profession_ids: List of profession IDs to filter
-#         use_gender_question: Boolean for gender vs profession question
-#         cache_file: Path to cache file
-
-#     Returns:
-#         tuple: (texts, labels)
-#     """
-#     # Create cache key based on parameters
-#     cache_key = f"prof_{profession_ids}_gender_{use_gender_question}"
-
-#     if os.path.exists(cache_file):
-#         with open(cache_file, "rb") as f:
-#             cache_data = pickle.load(f)
-#             if cache_key in cache_data:
-#                 print(f"Loading cached dataset for {cache_key}")
-#                 return cache_data[cache_key]
-#     else:
-#         cache_data = {}
-
-#     train_df, test_df = dataset_to_df(dataset_name)
-
-#     print(f"Creating new dataset for {cache_key}")
-#     texts, labels = filter_and_balance_professions(
-#         train_df,
-#         profession_ids=profession_ids,
-#         use_gender_question=use_gender_question,
-#         min_count=min_count,
-#     )
-
-#     # Cache the results
-#     cache_data[cache_key] = (texts, labels)
-#     with open(cache_file, "wb") as f:
-#         pickle.dump(cache_data, f)
-
-#     return texts, labels
 
 
 def dataset_to_list_of_strs(

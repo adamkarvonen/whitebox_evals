@@ -3,11 +3,13 @@ from datasets import load_dataset
 from tqdm import tqdm
 from typing import Optional, Callable
 import torch
+import einops
 
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from mypkg.whitebox_infra.dictionaries import topk_sae, base_sae
+import mypkg.whitebox_infra.model_utils as model_utils
 
 
 def collect_token_ids(tokenizer, candidates):
@@ -314,105 +316,71 @@ def get_effects(
     return effects_F, error_effect
 
 
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_name = "google/gemma-2-2b"
-    dtype = torch.bfloat16
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, device_map="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+@torch.no_grad()
+def compute_activations(
+    transformers_model: AutoModelForCausalLM,
+    sae: base_sae.BaseSAE,
+    model_inputs: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    chosen_layers: list[int],
+    submodules: list[torch.nn.Module],
+    verbose: bool = False,
+    ignore_bos: bool = True,
+) -> torch.Tensor:
+    assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
-    gradient_checkpointing = False
-
-    if gradient_checkpointing:
-        model.config.use_cache = False
-        model.gradient_checkpointing_enable()
-
-    use_gender_question = True
-    # use_gender_question = False
-    chosen_layers = [12]
-
-    train_texts, train_labels = load_or_create_dataset(
-        "bias_in_bios",
-        profession_ids=[0, 1, 2, 6, 9, 21, 13],
-        use_gender_question=use_gender_question,
-        min_count=100,
+    layer_acts_BLD = model_utils.collect_activations(
+        transformers_model,
+        submodules[0],
+        model_inputs,
     )
 
-    dataloader = create_simple_dataloader(
-        train_texts, train_labels, model_name, device, batch_size=50
-    )
+    encoded_acts_BLF = sae.encode(layer_acts_BLD)
 
-    paired_sae_repos = get_topk_saes(14)
+    encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
 
-    print(paired_sae_repos)
+    pos_mask_B = labels == 1
+    neg_mask_B = labels == 0
 
-    abs_effects = {}
-    ranking_effects = {}
+    pos_acts_BLF = encoded_acts_BLF[pos_mask_B]
+    neg_acts_BLF = encoded_acts_BLF[neg_mask_B]
 
-    for i, sae_group in enumerate(paired_sae_repos):
-        print("\n\n\n\nTrainer ID:", i)
-        abs_effects[i] = {}
-        ranking_effects[i] = {}
+    pos_acts_F = einops.reduce(pos_acts_BLF, "b l f -> f", "mean")
+    neg_acts_F = einops.reduce(neg_acts_BLF, "b l f -> f", "mean")
 
-        for sae_repo, sae_path, sae_type in sae_group:
-            sae = topk_sae.load_dictionary_learning_topk_sae(
-                repo_id=sae_repo,
-                filename=sae_path,
-                model_name=model_name,
-                device=device,
-                dtype=dtype,
-                local_dir=f"downloaded_saes_{sae_type}",
-            )
+    diff_acts_F = pos_acts_F - neg_acts_F
 
-            submodules = [get_submodule(model, layer) for layer in chosen_layers]
+    return diff_acts_F
 
-            # Build the custom loss function
-            yes_vs_no_loss_fn = make_yes_no_loss_fn(
-                tokenizer,
-                yes_candidates=["yes", " yes", "Yes", " Yes", "YES", " YES"],
-                no_candidates=["no", " no", "No", " No", "NO", " NO"],
-                device=device,
-            )
 
-            effects_F, error_effect = get_effects(
-                model,
-                sae,
-                dataloader,
-                yes_vs_no_loss_fn,
-                submodules,
-                chosen_layers,
-                device,
-            )
+def get_activations(
+    model: AutoModelForCausalLM,
+    sae: base_sae.BaseSAE,
+    dataloader: DataLoader,
+    submodules: list[torch.nn.Module],
+    chosen_layers: list[int],
+    device: torch.device,
+) -> torch.Tensor:
+    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
 
-            # Print peak memory usage
-            if torch.cuda.is_available():
-                peak_memory = (
-                    torch.cuda.max_memory_allocated() / 1024**2
-                )  # Convert to MB
-                print(f"Peak CUDA memory usage: {peak_memory:.2f} MB")
+    for batch in tqdm(dataloader):
+        input_ids, attention_mask, labels, idx_batch = batch
 
-            error_effect_ranking = (
-                torch.sum(effects_F.abs() > error_effect.abs()).item() + 1
-            )
-            print(f"sae_type: {sae_type}, sae_repo: {sae_repo}")
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
 
-            print(f"error_effect: {error_effect}")
-            print(f"effects_F: {effects_F.abs().topk(10).values}")
-            print(f"effects_F: {effects_F.abs().topk(10).indices}")
-
-            print(f"error_effect_ranking: {error_effect_ranking}")
-
-            abs_effects[i][sae_type] = error_effect.abs().mean().item()
-            ranking_effects[i][sae_type] = error_effect_ranking
-
-    for i in range(len(paired_sae_repos)):
-        print("\n\n\n\nTrainer ID:", i)
-        print(f"abs_effects: {abs_effects[i]}")
-        print(f"ranking_effects: {ranking_effects[i]}")
-
-        print(f"difference: {abs_effects[i]['before'] - abs_effects[i]['after']}")
-        print(
-            f"difference: {ranking_effects[i]['before'] - ranking_effects[i]['after']}"
+        effects_F += compute_activations(
+            model,
+            sae,
+            model_inputs,
+            labels,
+            chosen_layers,
+            submodules,
+            verbose=False,
         )
+
+    effects_F /= len(dataloader)
+
+    return effects_F

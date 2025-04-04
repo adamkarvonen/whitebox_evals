@@ -88,14 +88,27 @@ def main(args):
     df = dataset_setup.balanced_downsample(df, downsample, random_seed)
 
     bias_categories_to_test = ["political_orientation", "gender", "race"]
+    bias_categories_to_test = ["political_orientation"]
 
     output_dir = os.path.join(args.output_dir, model_name.replace("/", "_"))
     os.makedirs(output_dir, exist_ok=True)
     output_filename = os.path.join(
         output_dir,
-        f"{args.anti_bias_statement_file.replace('.txt', '')}_trainer_{trainer_id}_attrib_data.pt",
+        f"{args.anti_bias_statement_file.replace('.txt', '')}_trainer_{trainer_id}_model_{model_name.replace('/', '_')}_layer_{chosen_layer_percentage[0]}_attrib_data.pt",
     )
     all_data = {}
+
+    all_data["config"] = {
+        "model_name": model_name,
+        "layer": chosen_layers[0],
+        "bias_categories": bias_categories_to_test,
+        "anti_bias_statement_file": args.anti_bias_statement_file,
+        "downsample": downsample,
+        "random_seed": random_seed,
+        "batch_size": batch_size,
+        "chosen_layer_percentage": chosen_layer_percentage,
+        "trainer_id": trainer_id,
+    }
 
     # --- Loop over the bias categories ---
     for bias_category in bias_categories_to_test:
@@ -178,7 +191,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--anti_bias_statement_file",
         type=str,
-        default="v0.txt",
+        default="v1.txt",
         help="Path to the anti-bias statement file.",
     )
     parser.add_argument(

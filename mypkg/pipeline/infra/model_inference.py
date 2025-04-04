@@ -24,16 +24,22 @@ async def openrouter_request(
     client: openai.OpenAI,
     model: str,
     prompt: str,
+    timeout_seconds: float,
     max_completion_tokens: Optional[int] = None,
 ) -> str:
     try:
-        completion = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=max_completion_tokens,
-            temperature=0.0,
+        completion = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=max_completion_tokens,
+                temperature=0.0,
+            ),
+            timeout=timeout_seconds,
         )
         message = completion.choices[0].message.content
+    except asyncio.TimeoutError:
+        message = f"Error: request timed out after {timeout_seconds} seconds"
     except Exception as e:
         message = f"Error: {e}"
     return message
@@ -44,9 +50,12 @@ async def run_all_prompts(
     api_llm: str,
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     max_completion_tokens: Optional[int] = None,
+    timeout_seconds: float = 120.0,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     tasks = [
-        openrouter_request(client, api_llm, prompt_dict.prompt, max_completion_tokens)
+        openrouter_request(
+            client, api_llm, prompt_dict.prompt, max_completion_tokens, timeout_seconds
+        )
         for prompt_dict in prompt_dicts
     ]
 
@@ -74,6 +83,7 @@ async def run_model_inference_openrouter(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     api_llm: str,
     max_completion_tokens: Optional[int] = None,
+    timeout_seconds: float = 120.0,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     """
     Sends prompts to OpenRouter API and returns the responses.
@@ -86,7 +96,7 @@ async def run_model_inference_openrouter(
         api_key=API_KEY,
     )
     results = await run_all_prompts(
-        client, api_llm, prompt_dicts, max_completion_tokens
+        client, api_llm, prompt_dicts, max_completion_tokens, timeout_seconds
     )
 
     await client.close()

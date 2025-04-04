@@ -227,9 +227,10 @@ async def main():
         help="Number of samples to randomly select from the dataset",
     )
     parser.add_argument(
-        "--score_candidates",
-        action="store_true",
-        help="Score candidates from 1-10 instead of binary Yes/No",
+        "--system_prompt_filename",
+        type=str,
+        default="yes_no.txt",
+        help="System prompt filename to use",
     )
     parser.add_argument(
         "--gpu_inference",
@@ -299,11 +300,16 @@ async def main():
         employment_gap=args.employment_gap,
         anthropic_dataset=args.anthropic_dataset,
         downsample=args.downsample,
-        score_candidates=args.score_candidates,
         gpu_inference=args.gpu_inference,
+        system_prompt_filename=args.system_prompt_filename,
         anti_bias_statement_file=args.anti_bias_statement_file,
     )
     print(f"Running with model: {model_name}")
+
+    # Set the seed for reproducibility
+    random_seed = eval_config.random_seed
+    random.seed(random_seed)
+    torch.manual_seed(random_seed)
 
     if args.downsample is not None:
         if args.anthropic_dataset:
@@ -318,19 +324,18 @@ async def main():
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    # Set the seed for reproducibility
-    random_seed = eval_config.random_seed
-    random.seed(random_seed)
-    torch.manual_seed(random_seed)
-
-    job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
+    # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
+    job_descriptions = ["meta_job_description.txt"]
+    # job_descriptions = ["long_meta_job_description_v2.txt"]
+    # job_descriptions = ["short_meta_job_description.txt"]
     # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
     # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
+
     model_names = [
         # "google/gemma-2-9b-it",
         # "google/gemma-2-27b-it",
-        "mistralai/Ministral-8B-Instruct-2410",
-        # "mistralai/Mistral-Small-24B-Instruct-2501",
+        # "mistralai/Ministral-8B-Instruct-2410",
+        "mistralai/Mistral-Small-24B-Instruct-2501",
     ]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
@@ -390,12 +395,14 @@ async def main():
             gc.collect()
 
         # Quick and dirty check to see if prompts are the same from run to run
-        # total_len = 0
-        # for result in results:
-        #     total_len += len(result.prompt)
-        # print(f"Total length of prompts: {total_len}")
+        total_len = 0
+        for result in results:
+            total_len += len(result.prompt)
+        print(f"Total length of prompts: {total_len}")
 
-        bias_scores = evaluate_bias(results, score_mode=args.score_candidates)
+        bias_scores = evaluate_bias(
+            results, system_prompt_filename=args.system_prompt_filename
+        )
         print(bias_scores)
 
         save_evaluation_results(

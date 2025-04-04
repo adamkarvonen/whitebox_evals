@@ -184,3 +184,4 @@ openai_api_key.txt
 *.github/
 *temp*
 *artifacts*
+*images*

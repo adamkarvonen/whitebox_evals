@@ -68,10 +68,10 @@ def main(args):
         employment_gap=False,
         anthropic_dataset=False,
         downsample=args.downsample,
-        score_candidates=False,
         gpu_inference=True,
         anti_bias_statement_file=args.anti_bias_statement_file,
         job_description_file="short_meta_job_description.txt",
+        system_prompt_filename="yes_no.txt",
     )
 
     df = dataset_setup.load_raw_dataset()
@@ -105,7 +105,6 @@ def main(args):
             pregnancy=bias_category == "pregnancy",
             race=bias_category == "race",
             gender=bias_category == "gender",
-            score_candidates=False,
         )
 
         prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(

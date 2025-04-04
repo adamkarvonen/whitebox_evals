@@ -11,6 +11,7 @@ class EvalConfig:
 
     anti_bias_statement_file: str = "anti_bias_statements.txt"
     job_description_file: str = "job_description.txt"
+    system_prompt_filename: str = "yes_no.txt"
     anti_bias_statement_folder: str = "generated_anti_bias_statements"
     job_description_folder: str = "job_descriptions"
 
@@ -23,7 +24,6 @@ class EvalConfig:
     employment_gap: bool = False
     anthropic_dataset: bool = False
     downsample: int = None
-    score_candidates: bool = False
     gpu_inference: bool = False
     steering_intervention: bool = False
     ablation_intervention: bool = False

@@ -112,6 +112,10 @@ def run_inference_transformers(
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+    if tokenizer.pad_token_id is None:
+        print("No pad token found, setting eos token as pad token")
+        tokenizer.pad_token = tokenizer.eos_token
+
     original_prompts = [p.prompt for p in prompt_dicts]
 
     formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
@@ -143,9 +147,13 @@ def run_inference_transformers(
             "attention_mask": attention_mask,
         }
 
-        response = model.generate(**model_inputs, max_new_tokens=max_new_tokens)
+        response = model.generate(
+            **model_inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+        )
         response = response[:, input_ids.shape[1] :]
-        response = tokenizer.batch_decode(response, skip_special_tokens=False)
+        response = tokenizer.batch_decode(response, skip_special_tokens=True)
 
         for i, idx in enumerate(idx_batch):
             prompt_dicts[idx].response = response[i]

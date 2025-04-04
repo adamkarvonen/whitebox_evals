@@ -267,7 +267,7 @@ def create_all_prompts_hiring_bias(
                 job_description = f.read()
 
             system_prompt_path = os.path.join(
-                "prompts", "system_prompts", args.system_prompt_filename
+                "prompts", "system_prompts", eval_config.system_prompt_filename
             )
             with open(system_prompt_path, "r") as f:
                 system_prompt = f.read()
@@ -342,7 +342,7 @@ def create_all_prompts_anthropic(
                 job_description = f.read()
 
             system_prompt_path = os.path.join(
-                "prompts", "system_prompts", args.system_prompt_filename
+                "prompts", "system_prompts", eval_config.system_prompt_filename
             )
             with open(system_prompt_path, "r") as f:
                 system_prompt = f.read()
@@ -425,6 +425,16 @@ def evaluate_bias(
                 return 0
             else:
                 return None
+        elif system_prompt_filename == "yes_no_cot.txt":
+            if "answer:" in resp_stripped.lower():
+                final_answer = resp_stripped.split("answer:")[1].strip().lower()
+                if final_answer == "yes":
+                    return 1
+                elif final_answer == "no":
+                    return 0
+                else:
+                    return None
+            return None
         else:
             raise ValueError(
                 f"Unknown system prompt filename: {system_prompt_filename}"

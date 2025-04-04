@@ -342,6 +342,11 @@ async def main():
 
     model_names_seen = set()
 
+    if eval_config.system_prompt_filename == "yes_no_cot.txt":
+        max_completion_tokens = 200
+    else:
+        max_completion_tokens = 5
+
     for job_description, model_name in itertools.product(job_descriptions, model_names):
         eval_config.anti_bias_statement_file = args.anti_bias_statement_file
         eval_config.job_description_file = job_description
@@ -390,7 +395,7 @@ async def main():
             if model_name in OPENROUTER_NAME_LOOKUP:
                 model_name = OPENROUTER_NAME_LOOKUP[model_name]
             results = await run_model_inference_openrouter(
-                prompts, model_name, max_completion_tokens=10
+                prompts, model_name, max_completion_tokens=max_completion_tokens
             )
             gc.collect()
 

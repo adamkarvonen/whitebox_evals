@@ -21,6 +21,9 @@ def collect_token_ids(tokenizer, candidates):
     for c in candidates:
         # add_special_tokens=False so we only get raw subwords
         ids = tokenizer.encode(c, add_special_tokens=False)
+        if len(ids) > 1:
+            ids = ids[:1]
+        assert len(ids) == 1, f"Expected 1 token ID, got {len(ids)} for {c}"
         token_ids.update(ids)
 
     return list(token_ids)
@@ -345,8 +348,19 @@ def compute_activations(
     pos_acts_BLF = encoded_acts_BLF[pos_mask_B]
     neg_acts_BLF = encoded_acts_BLF[neg_mask_B]
 
-    pos_acts_F = einops.reduce(pos_acts_BLF, "b l f -> f", "mean")
-    neg_acts_F = einops.reduce(neg_acts_BLF, "b l f -> f", "mean")
+    pos_acts_F = einops.reduce(
+        pos_acts_BLF.to(dtype=torch.float32), "b l f -> f", "mean"
+    )
+    neg_acts_F = einops.reduce(
+        neg_acts_BLF.to(dtype=torch.float32), "b l f -> f", "mean"
+    )
+
+    if pos_mask_B.sum().item() == 0:
+        assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
+        pos_acts_F = torch.zeros_like(neg_acts_F)
+    if neg_mask_B.sum().item() == 0:
+        assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
+        neg_acts_F = torch.zeros_like(pos_acts_F)
 
     diff_acts_F = pos_acts_F - neg_acts_F
 
@@ -361,7 +375,7 @@ def get_activations(
     chosen_layers: list[int],
     device: torch.device,
 ) -> torch.Tensor:
-    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
+    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device, dtype=torch.float32)
 
     for batch in tqdm(dataloader):
         input_ids, attention_mask, labels, idx_batch = batch
@@ -379,7 +393,7 @@ def get_activations(
             chosen_layers,
             submodules,
             verbose=False,
-        )
+        ).to(dtype=torch.float32)
 
     effects_F /= len(dataloader)
 

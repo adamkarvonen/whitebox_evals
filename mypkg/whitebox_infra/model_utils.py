@@ -156,25 +156,31 @@ def load_model_sae(
         raise ValueError(f"Model {model_name} not supported")
 
 
-def add_mistral_v3_chat_template(prompts: list[str]) -> list[str]:
-    return [f"[INST]{prompt}[/INST]" for prompt in prompts]
+def add_mistral_v3_chat_template(
+    prompts: list[str], add_bos: bool = False
+) -> list[str]:
+    bos = "<s>" if add_bos else ""
+    return [f"{bos}[INST]{prompt}[/INST]" for prompt in prompts]
 
 
-def add_gemma_chat_template(prompts: list[str]) -> list[str]:
+def add_gemma_chat_template(prompts: list[str], add_bos: bool = False) -> list[str]:
+    bos = "<bos>" if add_bos else ""
     return [
-        f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+        f"{bos}<start_of_turn>user\n{bos}{prompt}<end_of_turn>\n<start_of_turn>model\n"
         for prompt in prompts
     ]
 
 
-def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
+def add_chat_template(
+    prompts: list[str], model_name: str, add_bos: bool = False
+) -> list[str]:
     if (
         model_name == "mistralai/Ministral-8B-Instruct-2410"
         or model_name == "mistralai/Mistral-Small-24B-Instruct-2501"
     ):
-        return add_mistral_v3_chat_template(prompts)
+        return add_mistral_v3_chat_template(prompts, add_bos)
     elif model_name == "google/gemma-2-9b-it" or model_name == "google/gemma-2-27b-it":
-        return add_gemma_chat_template(prompts)
+        return add_gemma_chat_template(prompts, add_bos)
     else:
         raise ValueError(f"Please implement a chat template for {model_name}")
 

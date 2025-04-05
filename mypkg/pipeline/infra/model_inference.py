@@ -13,6 +13,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 import einops
+import vllm
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
@@ -105,12 +106,77 @@ async def run_model_inference_openrouter(
 
 
 @torch.inference_mode()
+def run_inference_vllm(
+    prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
+    model_name: str,
+    max_new_tokens: int = 200,
+    max_length: int = 8192,
+) -> list[hiring_bias_prompts.ResumePromptResult]:
+    model = vllm.LLM(model=model_name, dtype="bfloat16")
+    original_prompts = [p.prompt for p in prompt_dicts]
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if tokenizer.pad_token_id is None:
+        print("No pad token found, setting eos token as pad token")
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Format prompts with chat template if needed
+    formatted_prompts = model_utils.add_chat_template(
+        original_prompts, model_name, add_bos=False
+    )
+    tokenized_inputs = tokenizer(
+        formatted_prompts,
+        padding=False,
+        return_tensors=None,
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_length,
+    )
+
+    prompt_token_ids = [input_ids for input_ids in tokenized_inputs["input_ids"]]
+
+    # Create sampling parameters
+    sampling_params = vllm.SamplingParams(
+        max_tokens=max_new_tokens,
+        temperature=0.0,  # Equivalent to do_sample=False
+    )
+
+    outputs = model.generate(
+        prompt_token_ids=prompt_token_ids,  # Pass raw strings directly
+        sampling_params=sampling_params,
+        use_tqdm=True,
+    )
+
+    for i, output in enumerate(outputs):
+        # Get the generated token IDs and decode
+        generated_ids = output.outputs[0].token_ids
+        response_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+        prompt_dicts[i].response = response_text
+
+    # This is to use a list of strings
+    # outputs = model.generate(
+    #     prompts=formatted_prompts,  # Pass raw strings directly
+    #     sampling_params=sampling_params,
+    #     use_tqdm=True,
+    # )
+
+    # Process outputs
+    # for i, output in enumerate(outputs):
+    #     # Get the generated text directly (vLLM decodes it for us)
+    #     response_text = output.outputs[0].text
+    #     prompt_dicts[i].response = response_text
+
+    return prompt_dicts
+
+
+@torch.inference_mode()
 def run_inference_transformers(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     model_name: str,
     batch_size: int = 64,
     ablation_features: Optional[torch.Tensor] = None,
     max_new_tokens: int = 200,
+    max_length: int = 8192,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     dtype = torch.bfloat16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -135,7 +201,7 @@ def run_inference_transformers(
         model_name,
         device,
         batch_size=batch_size,
-        max_length=8192,
+        max_length=max_length,
     )
 
     if ablation_features is not None:
@@ -178,6 +244,7 @@ def run_single_forward_pass_transformers(
     batch_size: int = 64,
     ablation_features: Optional[torch.Tensor] = None,
     padding_side: str = "left",
+    max_length: int = 8192,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     assert padding_side in ["left", "right"]
 
@@ -200,7 +267,7 @@ def run_single_forward_pass_transformers(
         model_name,
         device,
         batch_size=batch_size,
-        max_length=8192,
+        max_length=max_length,
     )
 
     if ablation_features is not None:

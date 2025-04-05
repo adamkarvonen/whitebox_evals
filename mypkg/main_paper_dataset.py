@@ -166,6 +166,7 @@ model_features = {
 
 
 async def main():
+    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference"""
     # Set up logging to file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cache_dir = os.path.join(os.path.dirname(__file__), "cache")
@@ -394,10 +395,15 @@ async def main():
                 ablation_features=torch.tensor(model_features[model_name]),
             )
         elif args.gpu_inference:
-            results = model_inference.run_inference_transformers(
+            # results = model_inference.run_inference_transformers(
+            #     prompts,
+            #     model_name,
+            #     batch_size=batch_size,
+            #     max_new_tokens=max_completion_tokens,
+            # )
+            results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
-                batch_size=batch_size,
                 max_new_tokens=max_completion_tokens,
             )
         else:

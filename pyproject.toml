@@ -30,6 +30,7 @@ dependencies = [
     "transformers==4.49.0",
     "wheel>=0.45.1",
     "xformers>=0.0.28.post1",
+    "vllm"
 ]
 
 [project.optional-dependencies]

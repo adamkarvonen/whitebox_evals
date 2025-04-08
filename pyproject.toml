@@ -27,9 +27,9 @@ dependencies = [
     "seaborn>=0.13.2",
     "setuptools>=75.3.2",
     "torch>=2.4.1",
-    "transformers==4.49.0",
+    "transformers",
     "wheel>=0.45.1",
-    "xformers>=0.0.28.post1",
+    "xformers",
     "vllm"
 ]
 

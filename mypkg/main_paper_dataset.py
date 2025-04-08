@@ -18,6 +18,7 @@ import torch
 from dataclasses import asdict
 import itertools
 import gc
+import time
 
 from mypkg.eval_config import EvalConfig
 from mypkg.pipeline.setup.dataset import (
@@ -166,12 +167,16 @@ model_features = {
 
 
 async def main():
-    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference"""
+    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
+
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
     # Set up logging to file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cache_dir = os.path.join(os.path.dirname(__file__), "cache")
     os.makedirs(cache_dir, exist_ok=True)
     log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
+
+    start_time = time.time()
 
     # Create a custom logger that writes to both file and console
     class Logger:
@@ -457,6 +462,9 @@ async def main():
         if torch.cuda.is_available():
             peak_memory = torch.cuda.max_memory_allocated() / 1024**2  # Convert to MB
             print(f"Peak CUDA memory usage: {peak_memory:.2f} MB")
+
+    end_time = time.time()
+    print(f"Total time taken: {end_time - start_time:.2f} seconds")
 
 
 if __name__ == "__main__":

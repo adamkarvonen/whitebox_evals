@@ -103,8 +103,52 @@ def view_outputs(
             print("-" * 50)
 
 
+def analyze_prediction_rates(
+    labels: list[int], predicted_tokens: list[str], verbose: bool = False
+) -> dict[int, dict]:
+    # Initialize counters
+    stats = {
+        1: {"yes": 0, "no": 0, "invalid": 0, "total": 0},
+        0: {"yes": 0, "no": 0, "invalid": 0, "total": 0},
+    }
+
+    # Count occurrences
+    for label, pred in zip(labels, predicted_tokens):
+        stats[label]["total"] += 1
+        pred = pred.lower()
+        if pred == "yes":
+            stats[label]["yes"] += 1
+        elif pred == "no":
+            stats[label]["no"] += 1
+        else:
+            stats[label]["invalid"] += 1
+
+    # Calculate rates
+    results = {}
+    for label in stats:
+        total = stats[label]["total"]
+        results[label] = {
+            "yes_rate": stats[label]["yes"] / total * 100,
+            "no_rate": stats[label]["no"] / total * 100,
+            "invalid_rate": stats[label]["invalid"] / total * 100,
+            "total_samples": total,
+        }
+
+    # Print results in a readable format
+    if verbose:
+        for label in stats:
+            print(f"\nLabel {label}:")
+            print(f"Total samples: {results[label]['total_samples']}")
+            print(f"Yes rate: {results[label]['yes_rate']:.1f}%")
+            print(f"No rate: {results[label]['no_rate']:.1f}%")
+            print(f"Invalid rate: {results[label]['invalid_rate']:.1f}%")
+
+    return results
+
+
 def compute_attributions(
     transformers_model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     sae: base_sae.BaseSAE,
     model_inputs: dict[str, torch.Tensor],
     labels: torch.Tensor,
@@ -216,24 +260,26 @@ def compute_attributions(
 
         if padding_side == "right":
             seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-            answer_logits = output_logits[
+            answer_logits_B = output_logits[
                 torch.arange(output_logits.shape[0]),
                 seq_lengths_B,
                 :,
             ]
         elif padding_side == "left":
-            answer_logits = output_logits[
+            answer_logits_B = output_logits[
                 :,
                 -1,
                 :,
             ]
-        loss = loss_fn(answer_logits, labels)
+        loss = loss_fn(answer_logits_B, labels)
         loss.backward()
+
+        predicted_tokens = tokenizer.batch_decode(answer_logits_B.argmax(dim=-1))
 
         if verbose:
             model_name = transformers_model.__class__.__name__
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            view_outputs(tokenizer, model_inputs["input_ids"], answer_logits)
+            view_outputs(tokenizer, model_inputs["input_ids"], answer_logits_B)
 
     finally:
         # Remove hooks to avoid side effects if function is called repeatedly
@@ -283,6 +329,8 @@ def compute_attributions(
                 "effects_BLF": node_effects_BLF.detach(),
                 "encoded_acts_BLF": encoded_acts_BLF.detach(),
                 "error_effects_BLD": error_effects_BLD.detach(),
+                "labels": labels,
+                "predicted_tokens": predicted_tokens,
             }
 
     return results
@@ -290,16 +338,18 @@ def compute_attributions(
 
 def get_effects(
     model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
     sae: base_sae.BaseSAE,
     dataloader: DataLoader,
     yes_vs_no_loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     submodules: list[torch.nn.Module],
     chosen_layers: list[int],
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    verbose: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, list]]:
     effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
     error_effect = 0
-
+    predicted_tokens = {"labels": [], "predicted_tokens": []}
     for batch in tqdm(dataloader):
         input_ids, attention_mask, labels, idx_batch = batch
 
@@ -310,6 +360,7 @@ def get_effects(
 
         batch_results = compute_attributions(
             model,
+            tokenizer,
             sae,
             model_inputs,
             labels,
@@ -336,11 +387,21 @@ def get_effects(
                 error_effect += (
                     error_effects_BLD.to(dtype=torch.float32).sum(dim=(1, 2)).mean()
                 )
+                predicted_tokens["labels"].extend(labels.tolist())
+                predicted_tokens["predicted_tokens"].extend(
+                    batch_results[layer]["predicted_tokens"]
+                )
 
     effects_F /= len(dataloader)
     error_effect /= len(dataloader)
 
-    return effects_F, error_effect
+    stats = analyze_prediction_rates(
+        predicted_tokens["labels"],
+        predicted_tokens["predicted_tokens"],
+        verbose=verbose,
+    )
+
+    return effects_F, error_effect, predicted_tokens
 
 
 @torch.no_grad()

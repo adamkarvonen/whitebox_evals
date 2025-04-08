@@ -245,17 +245,19 @@ def run_single_forward_pass_transformers(
     ablation_features: Optional[torch.Tensor] = None,
     padding_side: str = "left",
     max_length: int = 8192,
+    model: Optional[AutoModelForCausalLM] = None,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     assert padding_side in ["left", "right"]
 
     dtype = torch.bfloat16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto",
-        # attn_implementation="flash_attention_2",  # FlashAttention2 doesn't support right padding with mistral
-    )
+    if model is None:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            # attn_implementation="flash_attention_2",  # FlashAttention2 doesn't support right padding with mistral
+        )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     original_prompts = [p.prompt for p in prompt_dicts]

@@ -83,7 +83,7 @@ def create_simple_dataloader(
     model_name: str,
     device: torch.device,
     batch_size: int = 8,
-    max_length: int = 1024,
+    max_length: int = 8192,
     shuffle: bool = False,
     sort_by_length: bool = True,
     padding_side: str = "left",

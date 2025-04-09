@@ -120,9 +120,8 @@ def create_simple_dataloader(
     encoded = tokenizer(
         texts,
         padding=False,  # Do not pad here.
-        truncation=True,
+        truncation=False,
         return_tensors=None,  # Returns lists, not tensors.
-        max_length=max_length,
         add_special_tokens=True,
     )
 
@@ -136,6 +135,17 @@ def create_simple_dataloader(
             strict=True,
         )
     )
+
+    # Filter out samples exceeding max_length
+    original_length = len(data)
+    data = [sample for sample in data if len(sample[0]) <= max_length]
+    new_length = len(data)
+
+    if new_length < original_length:
+        print(
+            f"Filtered out {original_length - new_length} samples that exceeded max_length ({max_length})"
+        )
+        print(f"Original dataset size: {original_length}, new size: {new_length}")
 
     if sort_by_length:
         assert shuffle is False, "Cannot shuffle if sorting by length"

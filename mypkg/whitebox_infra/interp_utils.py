@@ -112,6 +112,65 @@ def get_max_activating_prompts(
     return max_tokens_FKL, max_activations_FKL
 
 
+@torch.no_grad()
+def get_all_prompts_activations(
+    model: AutoModelForCausalLM,
+    submodule: torch.nn.Module,
+    tokenized_inputs_bL: list[dict[str, torch.Tensor]],
+    dim_indices: torch.Tensor,
+    dictionary: base_sae.BaseSAE,
+    zero_bos: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """ """
+    device = model.device
+    all_tokens_list = []
+    all_activations_list = []
+
+    # Ensure dim_indices is on the correct device
+    dim_indices = dim_indices.to(device)
+
+    for inputs_BL in tqdm(tokenized_inputs_bL, desc="Processing batches"):
+        # Ensure batch is on the correct device
+        input_ids_BL = inputs_BL["input_ids"].to(device)
+        attention_mask_BL = inputs_BL["attention_mask"].to(device)
+
+        # 1) Collect submodule activations
+        activations_BLD = collect_activations(
+            model,
+            submodule,
+            {"input_ids": input_ids_BL, "attention_mask": attention_mask_BL},
+        )
+
+        # 2) Apply dictionary's encoder
+        #    shape: [B, L, D_dict], dictionary.encode -> [B, L, F_dict]
+        activations_BLF = dictionary.encode(activations_BLD)
+
+        # 3) Select desired features
+        #    Ensure dim_indices is compatible with the last dimension of activations_BLF_full
+        activations_BLF = activations_BLF[:, :, dim_indices]
+
+        # 4) Optional: Zero out BOS token activations
+        if zero_bos:
+            activations_BLF[:, 0, :] = 0.0
+
+        # 5) Apply attention mask
+        activations_BLF = activations_BLF * attention_mask_BL[:, :, None]
+
+        # Append results for this batch (move back to CPU to avoid accumulating on GPU)
+        all_tokens_list.append(input_ids_BL.cpu())
+        all_activations_list.append(activations_BLF.cpu())
+
+    # Concatenate results from all batches
+    all_tokens_NL = torch.cat(all_tokens_list, dim=0)
+    all_tokens_FBL = einops.repeat(all_tokens_NL, "B L -> F B L", F=len(dim_indices))
+    # Concatenate results from all batches
+    all_activations_BLF = torch.cat(all_activations_list, dim=0)
+
+    all_activations_FBL = einops.rearrange(all_activations_BLF, "B L F -> F B L")
+
+    return all_tokens_FBL, all_activations_FBL
+
+
 # ================================
 # Main user-facing function
 # ================================
@@ -208,6 +267,8 @@ def get_interp_prompts_user_inputs(
     user_inputs: list[str],
     tokenizer: AutoTokenizer,
     batch_size: int = 32,
+    k: int = 30,
+    sort_by_activation: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     device = model.device
 
@@ -218,35 +279,44 @@ def get_interp_prompts_user_inputs(
         user_inputs,
         return_tensors="pt",
         padding=True,
+        padding_side="right",
         add_special_tokens=True,
     )
 
+    dataset_tokens = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in dataset_tokens.items()
+    }
+
     seq_length = dataset_tokens["input_ids"].shape[1]
 
-    all_batches = []
+    batched_tokens = []
 
     for i in range(0, dataset_tokens["input_ids"].shape[0], batch_size):
         batch_tokens = {
             "input_ids": dataset_tokens["input_ids"][i : i + batch_size],
             "attention_mask": dataset_tokens["attention_mask"][i : i + batch_size],
         }
-        all_batches.append(batch_tokens)
+        batched_tokens.append(batch_tokens)
 
-    # Make a list of batched tokens: each entry is shape [bs, context_length]
-    batched_tokens = [
-        tokens[i : i + batch_size] for i in range(0, len(tokens), batch_size)
-    ]
-
-    # Now get the max-activating prompts for the given dim_indices
-    max_tokens_FKL, max_activations_FKL = get_max_activating_prompts(
-        model=model,
-        submodule=submodule,
-        tokenized_inputs_bL=batched_tokens,
-        dim_indices=dim_indices,
-        batch_size=batch_size,
-        dictionary=sae,
-        context_length=seq_length,
-        k=30,  # or pass as a parameter if you want
-    )
+    if sort_by_activation:
+        # Now get the max-activating prompts for the given dim_indices
+        max_tokens_FKL, max_activations_FKL = get_max_activating_prompts(
+            model=model,
+            submodule=submodule,
+            tokenized_inputs_bL=batched_tokens,
+            dim_indices=dim_indices,
+            batch_size=batch_size,
+            dictionary=sae,
+            context_length=seq_length,
+            k=k,
+        )
+    else:
+        max_tokens_FKL, max_activations_FKL = get_all_prompts_activations(
+            model=model,
+            submodule=submodule,
+            tokenized_inputs_bL=batched_tokens,
+            dim_indices=dim_indices,
+            dictionary=sae,
+        )
 
     return max_tokens_FKL, max_activations_FKL

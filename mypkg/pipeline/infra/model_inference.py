@@ -121,14 +121,12 @@ def run_inference_vllm(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Format prompts with chat template if needed
-    formatted_prompts = model_utils.add_chat_template(
-        original_prompts, model_name, add_bos=False
-    )
+    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
     tokenized_inputs = tokenizer(
         formatted_prompts,
         padding=False,
         return_tensors=None,
-        add_special_tokens=True,
+        add_special_tokens=False,
         truncation=True,
         max_length=max_length,
     )

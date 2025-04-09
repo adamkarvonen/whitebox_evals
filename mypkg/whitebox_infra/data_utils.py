@@ -122,7 +122,7 @@ def create_simple_dataloader(
         padding=False,  # Do not pad here.
         truncation=False,
         return_tensors=None,  # Returns lists, not tensors.
-        add_special_tokens=True,
+        add_special_tokens=False,
     )
 
     # Create a list of samples as tuples: (input_ids, attention_mask, label)

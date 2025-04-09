@@ -84,7 +84,7 @@ for model_name in model_names:
                 torch.tensor(list(range(sae.W_dec.shape[0]))),
                 context_length=128,
                 tokenizer=tokenizer,
-                batch_size=batch_size * 16,
+                batch_size=batch_size * 8,
                 num_tokens=30_000_000,
             )
             acts_data = {

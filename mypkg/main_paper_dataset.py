@@ -169,6 +169,8 @@ model_features = {
 async def main():
     """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
 
+    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
+
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
     # Set up logging to file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

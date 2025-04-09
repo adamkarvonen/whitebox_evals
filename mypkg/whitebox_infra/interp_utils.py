@@ -7,6 +7,9 @@ from tqdm import tqdm
 from typing import Optional
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import zipfile
+import datetime
+import tempfile  # Good for creating temporary directories reliably
 
 from mypkg.whitebox_infra.dictionaries import topk_sae, base_sae
 from mypkg.whitebox_infra.model_utils import collect_activations
@@ -280,7 +283,7 @@ def get_interp_prompts_user_inputs(
         return_tensors="pt",
         padding=True,
         padding_side="right",
-        add_special_tokens=True,
+        add_special_tokens=False,
     )
 
     dataset_tokens = {
@@ -320,3 +323,118 @@ def get_interp_prompts_user_inputs(
         )
 
     return max_tokens_FKL, max_activations_FKL
+
+
+def generate_scp_command_for_html_zip(
+    html_contents: list,  # List of strings, each is HTML content for one file
+    remote_username: str,  # Your username on the remote machine
+    remote_hostname: str,  # Address/IP of the remote machine
+    remote_base_dir: str,  # A base directory on remote where the zip will be temporarily stored
+    local_target_dir: str,  # The directory on your LOCAL Mac to download the zip file into
+    zip_filename_prefix: str = "html_activations",  # Prefix for the zip file name
+) -> str | None:
+    """
+    Saves a list of HTML content strings to temporary files, creates a zip archive
+    of these files on the remote server, and returns the scp command to copy
+    the zip file to the local machine.
+
+    Args:
+        html_contents: A list where each element is a string of HTML content.
+        remote_username: Username for SSH login to the remote machine.
+        remote_hostname: Hostname or IP address of the remote machine.
+        remote_base_dir: Base directory on the remote machine to work within.
+                         A temporary subdirectory will be created here.
+        local_target_dir: The absolute path to the directory on the LOCAL machine
+                          where the zip file should be copied.
+        zip_filename_prefix: A prefix for the generated zip file name.
+
+    Returns:
+        A string containing the scp command to run on the local machine,
+        or None if no HTML content was provided or an error occurred.
+    """
+    if not html_contents:
+        print("No HTML content provided to zip.")
+        return None
+
+    # 1. Create a unique temporary directory on the remote machine
+    # Using tempfile is safer than just os.makedirs for temporary data
+    try:
+        # Create a unique directory within the specified base directory
+        # This avoids clashes if the script runs multiple times
+        temp_dir = tempfile.mkdtemp(prefix="html_zip_temp_", dir=remote_base_dir)
+        print(f"Created temporary remote directory: {temp_dir}")
+    except Exception as e:
+        print(f"Error creating temporary directory in {remote_base_dir}: {e}")
+        return None
+
+    # 2. Save individual HTML files into the temporary directory
+    saved_html_files = []
+    try:
+        for i, html_obj in enumerate(html_contents):
+            # Use a simple naming scheme within the zip
+            html_filename = f"activation_{i}.html"
+            html_filepath = os.path.join(temp_dir, html_filename)
+
+            html_str = str(html_obj)  # Use str() to get the string representation
+
+            with open(html_filepath, "w", encoding="utf-8") as f:
+                f.write(html_str)
+            saved_html_files.append(html_filepath)
+        print(f"Saved {len(saved_html_files)} HTML files to {temp_dir}")
+    except Exception as e:
+        print(f"Error saving HTML files to {temp_dir}: {e}")
+        # Consider cleanup here if needed
+        return None
+
+    # 3. Create the Zip archive
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"{zip_filename_prefix}_{timestamp}.zip"
+    # Place the zip file directly in the remote_base_dir for easier scp path
+    remote_zip_filepath = os.path.join(remote_base_dir, zip_filename)
+
+    try:
+        print(f"Creating zip archive: {remote_zip_filepath}")
+        with zipfile.ZipFile(remote_zip_filepath, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for html_file in saved_html_files:
+                # arcname ensures files are stored flat in the zip, not with temp_dir path
+                arcname = os.path.basename(html_file)
+                zipf.write(html_file, arcname=arcname)
+        print(f"Successfully created zip file with {len(saved_html_files)} entries.")
+    except Exception as e:
+        print(f"Error creating zip file {remote_zip_filepath}: {e}")
+        return None
+    finally:
+        # 4. Clean up the temporary individual HTML files and directory
+        print(f"Cleaning up temporary directory: {temp_dir}")
+        for html_file in saved_html_files:
+            try:
+                os.remove(html_file)
+            except Exception as e:
+                print(f"Warning: Could not remove temporary file {html_file}: {e}")
+        try:
+            os.rmdir(temp_dir)
+            print(f"Removed temporary directory: {temp_dir}")
+        except Exception as e:
+            print(f"Warning: Could not remove temporary directory {temp_dir}: {e}")
+
+    # 5. Generate the SCP command
+    # Ensure local path is quoted for safety, remote path usually fine unless it has weird chars
+    zip_foldername = zip_filename.split(".")[0]
+    scp_command = (
+        f'scp {remote_username}@{remote_hostname}:"{remote_zip_filepath}" "{local_target_dir}" ; '
+        f'unzip "{local_target_dir}/{zip_filename}" -d "{local_target_dir}/{zip_foldername}" ; '
+        f'rm "{local_target_dir}/{zip_filename}"'
+    )
+
+    print("\n" + "=" * 50)
+    print("✓ HTML files zipped successfully on the remote server.")
+    print(f"✓ Zip file location (remote): {remote_zip_filepath}")
+    print("\n>>> ACTION REQUIRED <<<")
+    print("Run the following command in your LOCAL Mac Terminal")
+    print("to download the zip file.")
+    print(f"Make sure the local target directory exists: {local_target_dir}")
+    print("-" * 50)
+    print(scp_command)
+    print("=" * 50)
+
+    return scp_command

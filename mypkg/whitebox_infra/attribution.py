@@ -321,15 +321,18 @@ def compute_attributions(
             error_effects_BLD = residual_BLD * x_grad_BLD * -1
 
             node_effects_BLF *= model_inputs["attention_mask"][:, :, None]
+            grad_x_dot_decoder_BLF *= model_inputs["attention_mask"][:, :, None]
             error_effects_BLD *= model_inputs["attention_mask"][:, :, None]
             encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
 
             # Store everything
             results[layer_idx] = {
                 "effects_BLF": node_effects_BLF.detach(),
+                "grad_x_dot_decoder_BLF": grad_x_dot_decoder_BLF.detach(),
                 "encoded_acts_BLF": encoded_acts_BLF.detach(),
                 "error_effects_BLD": error_effects_BLD.detach(),
                 "labels": labels,
+                "model_inputs": model_inputs,
                 "predicted_tokens": predicted_tokens,
             }
 

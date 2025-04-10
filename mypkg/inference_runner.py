@@ -8,15 +8,17 @@ start_time = time.time()
 
 # ------------------ HARD-CODED CONFIG ------------------
 # List of GPUs you want to use (by ID/index)
-GPUs = [
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-]  # For example, skip GPU 0 for interactive use
+# GPUs = [
+#     "1",
+#     "2",
+#     "3",
+#     "4",
+#     "5",
+#     "6",
+#     "7",
+# ]  # For example, skip GPU 0 for interactive use
+
+GPUs = ["0"]
 
 # Folder containing all your .txt anti-bias statements
 BIAS_TXT_FOLDER = "./prompts/generated_anti_bias_statements"
@@ -25,7 +27,7 @@ BIAS_TXT_FOLDER = "./prompts/generated_anti_bias_statements"
 MAIN_SCRIPT = "mypkg/main_paper_dataset.py"
 
 # Any extra arguments you want to pass to each run
-EXTRA_ARGS = "--downsample 100 --gpu_inference --political_orientation"
+EXTRA_ARGS = "--gpu_inference --political_orientation"
 # ------------------ END OF CONFIG ------------------
 
 # Find all .txt files in the folder

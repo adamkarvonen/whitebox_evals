@@ -13,7 +13,6 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 import einops
-import vllm
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
@@ -111,8 +110,12 @@ def run_inference_vllm(
     model_name: str,
     max_new_tokens: int = 200,
     max_length: int = 8192,
+    model=None,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
-    model = vllm.LLM(model=model_name, dtype="bfloat16")
+    import vllm
+
+    if model is None:
+        model = vllm.LLM(model=model_name, dtype="bfloat16")
     original_prompts = [p.prompt for p in prompt_dicts]
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 

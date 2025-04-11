@@ -8,6 +8,24 @@ import mypkg.whitebox_infra.dictionaries.jumprelu_sae as jumprelu_sae
 
 # Model configuration mapping
 MODEL_CONFIGS = {
+    "google/gemma-2-2b-it": {
+        "total_layers": 26,  # Adding for reference
+        "layer_mappings": {
+            25: {
+                "layer": 5,
+                "width_info": "width_16k/average_l0_143",
+            },
+            50: {
+                "layer": 12,
+                "width_info": "width_16k/average_l0_82",
+            },
+            75: {
+                "layer": 19,
+                "width_info": "width_16k/average_l0_137",
+            },
+        },
+        "batch_size": 1,
+    },
     "google/gemma-2-9b-it": {
         "total_layers": 40,  # Adding for reference
         "layer_mappings": {
@@ -97,6 +115,8 @@ def load_gemma_2_sae(
         repo_id = "google/gemma-scope-9b-it-res"
     elif model_name == "google/gemma-2-27b-it":
         repo_id = "google/gemma-scope-27b-pt-res"
+    elif model_name == "google/gemma-2-2b-it":
+        repo_id = "google/gemma-scope-2b-pt-res"
     else:
         raise ValueError(f"Model {model_name} not supported")
 
@@ -154,7 +174,11 @@ def load_model_sae(
     if layer_percent not in (25, 50, 75):
         raise ValueError(f"Layer percent must be 25, 50, or 75, got {layer_percent}")
 
-    if model_name == "google/gemma-2-9b-it" or model_name == "google/gemma-2-27b-it":
+    if (
+        model_name == "google/gemma-2-9b-it"
+        or model_name == "google/gemma-2-27b-it"
+        or model_name == "google/gemma-2-2b-it"
+    ):
         return load_gemma_2_sae(model_name, device, dtype, layer_percent)
     elif (
         model_name == "mistralai/Ministral-8B-Instruct-2410"
@@ -189,7 +213,11 @@ def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
         or model_name == "mistralai/Mistral-Small-24B-Instruct-2501"
     ):
         return add_mistral_v3_chat_template(prompts)
-    elif model_name == "google/gemma-2-9b-it" or model_name == "google/gemma-2-27b-it":
+    elif (
+        model_name == "google/gemma-2-9b-it"
+        or model_name == "google/gemma-2-27b-it"
+        or model_name == "google/gemma-2-2b-it"
+    ):
         return add_gemma_chat_template(prompts)
     elif model_name == "Qwen/Qwen2.5-3B-Instruct":
         return add_qwen_chat_template(prompts)

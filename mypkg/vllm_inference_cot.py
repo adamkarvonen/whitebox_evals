@@ -174,6 +174,9 @@ async def main():
     python mypkg/vllm_inference.py --gpu_inference --vllm_model_name mistralai/Ministral-8B-Instruct-2410 --political_orientation ;
     python mypkg/vllm_inference.py --gpu_inference --vllm_model_name google/gemma-2-9b-it --political_orientation
 
+
+    python mypkg/vllm_inference_cot.py --gpu_inference --vllm_model_name google/gemma-2-2b-it --political_orientation
+
     python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
@@ -286,7 +289,7 @@ async def main():
     parser.add_argument(
         "--score_output_dir",
         type=str,
-        default="score_output",
+        default="score_output_cot",
         help="Path to a directory to save the score output.",
     )
 
@@ -368,7 +371,8 @@ async def main():
     # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
     # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
 
-    anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 18)]
+    eval_config.system_prompt_filename = "yes_no_cot.txt"
+    anti_bias_statement_files = [f"v{i}.txt" for i in range(1, 4)]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
 
@@ -380,8 +384,7 @@ async def main():
     # Make sure the chat template exists
     chat_template_test = model_utils.add_chat_template(["Test"], model_name)
 
-    if args.gpu_inference:
-        model = vllm.LLM(model=model_name, dtype="bfloat16")
+    model = vllm.LLM(model=model_name, dtype="bfloat16")
 
     for anti_bias_statement_file in anti_bias_statement_files:
         print(f"Running with anti-bias statement: {anti_bias_statement_file}")
@@ -505,10 +508,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nGracefully shutting down...")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
+    asyncio.run(main())

@@ -419,12 +419,13 @@ async def main():
             torch.cuda.empty_cache()
 
             if args.gpu_forward_pass:
+                # raise NotImplementedError("GPU forward pass not implemented for VLLM")
                 batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
                 results = model_inference.run_single_forward_pass_transformers(
                     prompts, model_name, batch_size=batch_size
                 )
-                raise NotImplementedError("GPU forward pass not implemented for VLLM")
             elif args.perform_ablations:
+                raise NotImplementedError("Ablations not implemented for VLLM")
                 batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
                 results = model_inference.run_single_forward_pass_transformers(
                     prompts,
@@ -432,7 +433,6 @@ async def main():
                     batch_size=batch_size,
                     ablation_features=torch.tensor(model_features[model_name]),
                 )
-                raise NotImplementedError("Ablations not implemented for VLLM")
             elif args.gpu_inference:
                 # results = model_inference.run_inference_transformers(
                 #     prompts,

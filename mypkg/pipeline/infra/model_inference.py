@@ -24,9 +24,9 @@ async def openrouter_request(
     client: openai.OpenAI,
     model: str,
     prompt: str,
-    timeout_seconds: float,
     max_completion_tokens: Optional[int] = None,
-) -> str:
+    timeout_seconds: float = 120.0,
+) -> tuple[str, Optional[dict]]:
     try:
         completion = await asyncio.wait_for(
             client.chat.completions.create(
@@ -39,10 +39,10 @@ async def openrouter_request(
         )
         message = completion.choices[0].message.content
     except asyncio.TimeoutError:
-        message = f"Error: request timed out after {timeout_seconds} seconds"
+        message = f"Error: request timed out after {timeout_seconds} seconds", None
     except Exception as e:
-        message = f"Error: {e}"
-    return message
+        message = f"Error: {e}", None
+    return message, completion.model_dump() if completion else None
 
 
 async def run_all_prompts(
@@ -74,7 +74,8 @@ async def run_all_prompts(
         results = await asyncio.gather(*wrapped_tasks)
 
     for i, result in enumerate(results):
-        prompt_dicts[i].response = result
+        prompt_dicts[i].response = result[0]
+        prompt_dicts[i].chat_completion = result[1]
 
     return prompt_dicts
 

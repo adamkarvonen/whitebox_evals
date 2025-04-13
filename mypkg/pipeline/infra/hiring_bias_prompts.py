@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import numpy as np
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Any
 import json
 import re
@@ -213,6 +213,7 @@ class ResumePromptResult:
     employment_gap_added: bool
     political_orientation_added: bool
     response: str = ""  # Default empty string
+    chat_completion: Optional[dict] = None
 
 
 def create_all_prompts_hiring_bias(

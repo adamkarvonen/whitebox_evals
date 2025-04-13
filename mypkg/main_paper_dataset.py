@@ -85,22 +85,7 @@ def save_evaluation_results(
     # For each ResumePromptResult in `results`, store relevant info
     # so you can fully reconstruct or debug each inference later.
     for item in results:
-        evaluation_data["results"].append(
-            {
-                "name": item.name,
-                "gender": item.gender,
-                "race": item.race,
-                "politics": item.politics,
-                "job_category": item.job_category,
-                "pregnancy_added": item.pregnancy_added,
-                "employment_gap_added": item.employment_gap_added,
-                "political_orientation_added": item.political_orientation_added,
-                "system_prompt": item.system_prompt,
-                "task_prompt": item.task_prompt,
-                "prompt_text": item.prompt,
-                "response": item.response,
-            }
-        )
+        evaluation_data["results"].append(asdict(item))
 
     # Use a filename that includes the timestamp to keep files distinct
     output_filename = f"evaluation_{timestamp}_{model_name}_{eval_config.anti_bias_statement_file}_{eval_config.job_description_file}.json"
@@ -164,6 +149,13 @@ model_features = {
         428,
     ]
 }
+
+REASONING_MODELS = [
+    "openai/o1-mini",
+    "x-ai/grok-3-mini-beta",
+    "qwen/qwq-32b",
+    "openai/o1",
+]
 
 
 async def main():
@@ -345,7 +337,15 @@ async def main():
         # "google/gemma-2-9b-it",
         # "google/gemma-2-27b-it",
         # "mistralai/Ministral-8B-Instruct-2410",
-        "mistralai/Mistral-Small-24B-Instruct-2501",
+        # "mistralai/Mistral-Small-24B-Instruct-2501",
+        # "openai/gpt-4o-2024-08-06",
+        "deepseek/deepseek-r1-distill-llama-70b"
+        # "openai/o1-mini-2024-09-12",
+        # "openai/o1-mini",
+        # "openai/o1"
+        # "x-ai/grok-3-mini-beta"
+        # "qwen/qwq-32b"
+        # "openai/gpt-4o-mini"
     ]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
@@ -356,6 +356,12 @@ async def main():
         max_completion_tokens = 200
     else:
         max_completion_tokens = 5
+
+    if model_names[0] in REASONING_MODELS:
+        assert len(model_names) == 1
+        max_completion_tokens = None
+
+    max_completion_tokens = None
 
     for job_description, model_name in itertools.product(job_descriptions, model_names):
         eval_config.anti_bias_statement_file = args.anti_bias_statement_file
@@ -385,16 +391,16 @@ async def main():
         else:
             prompts = create_all_prompts_hiring_bias(df, args, eval_config)
 
-        batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-
         gc.collect()
         torch.cuda.empty_cache()
 
         if args.gpu_forward_pass:
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
             results = model_inference.run_single_forward_pass_transformers(
                 prompts, model_name, batch_size=batch_size
             )
         elif args.perform_ablations:
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,

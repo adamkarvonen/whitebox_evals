@@ -39,11 +39,15 @@ async def openrouter_request(
             timeout=timeout_seconds,
         )
         message = completion.choices[0].message.content
+        completion = completion.model_dump()
     except asyncio.TimeoutError:
-        message = f"Error: request timed out after {timeout_seconds} seconds", None
+        message = f"Error: request timed out after {timeout_seconds} seconds"
+        completion = None
     except Exception as e:
-        message = f"Error: {e}", None
-    return message, completion.model_dump() if completion else None
+        message = f"Error: {e}"
+        completion = None
+
+    return message, completion
 
 
 async def run_all_prompts(
@@ -209,9 +213,7 @@ def run_inference_transformers(
 
     if ablation_features is not None:
         sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
-        encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(
-            ablation_features, sae
-        )
+        encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(ablation_features, sae)
         scales = [0.0] * len(encoder_vectors)
         ablation_hook = get_conditional_clamping_hook(
             encoder_vectors, decoder_vectors, scales, encoder_biases
@@ -284,9 +286,7 @@ def run_single_forward_pass_transformers(
 
     if ablation_features is not None:
         sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
-        encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(
-            ablation_features, sae
-        )
+        encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(ablation_features, sae)
         scales = [0.0] * len(encoder_vectors)
         ablation_hook = get_conditional_clamping_hook(
             encoder_vectors, decoder_vectors, scales, encoder_biases
@@ -432,9 +432,7 @@ def get_conditional_clamping_hook(
             intervention_mask_BL = feature_acts_BL > encoder_threshold
 
             # Calculate clamping amount only where mask is True
-            decoder_BLD = (-feature_acts_BL[:, :, None] + coeff) * decoder_vector_D[
-                None, None, :
-            ]
+            decoder_BLD = (-feature_acts_BL[:, :, None] + coeff) * decoder_vector_D[None, None, :]
 
             # Apply clamping only where both mask is True and activation is positive
             resid_BLD = torch.where(

@@ -128,9 +128,7 @@ def balanced_downsample(df, n_samples, random_seed=42):
     balanced_sample = df[df["Resume_str"].isin(sampled_resumes)]
 
     print(f"Downsampled to {len(sampled_resumes)} unique resumes")
-    print(
-        f"Total samples after maintaining demographic variations: {len(balanced_sample)}"
-    )
+    print(f"Total samples after maintaining demographic variations: {len(balanced_sample)}")
 
     return balanced_sample
 
@@ -159,6 +157,8 @@ REASONING_MODELS = [
     "x-ai/grok-3-mini-beta",
     "qwen/qwq-32b",
     "openai/o1",
+    "anthropic/claude-3.7-sonnet:thinking",
+    "deepseek/deepseek-r1",
 ]
 
 
@@ -215,6 +215,11 @@ async def main():
         "--employment_gap",
         action="store_true",
         help="Whether to include employment gap information",
+    )
+    parser.add_argument(
+        "--misc",
+        action="store_true",
+        help="Whether to include misc information",
     )
     parser.add_argument(
         "--anthropic_dataset",
@@ -285,8 +290,8 @@ async def main():
         else:
             print("No industry filter applied.")
 
-    model_name = "gpt-4o-mini"
-    model_name = "google/gemma-2-9b-it"
+    # model_name = "gpt-4o-mini"
+    # model_name = "google/gemma-2-9b-it"
     # model_name = "google/gemma-2-27b-it"
     # model_name = "qwen/qwen2.5-32b-instruct"
     # model_name = "deepseek/deepseek-r1"
@@ -298,7 +303,7 @@ async def main():
     # model_name = "mistralai/mistral-small-3.1-24b-instruct"
 
     eval_config = EvalConfig(
-        model_name=model_name,
+        model_name="",
         industry=args.industry,
         mode=args.mode,
         political_orientation=args.political_orientation,
@@ -310,7 +315,6 @@ async def main():
         system_prompt_filename=args.system_prompt_filename,
         anti_bias_statement_file=args.anti_bias_statement_file,
     )
-    print(f"Running with model: {model_name}")
 
     # Set the seed for reproducibility
     random_seed = eval_config.random_seed
@@ -330,8 +334,8 @@ async def main():
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
-    # job_descriptions = ["meta_job_description.txt"]
+    # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
+    job_descriptions = ["meta_job_description.txt"]
     # job_descriptions = ["long_meta_job_description_v2.txt"]
     # job_descriptions = ["short_meta_job_description.txt"]
     # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
@@ -343,14 +347,18 @@ async def main():
         # "google/gemma-2-27b-it",
         # "mistralai/Ministral-8B-Instruct-2410",
         # "mistralai/Mistral-Small-24B-Instruct-2501",
+        # "deepseek/deepseek-r1",
         # "openai/gpt-4o-2024-08-06",
         # "deepseek/deepseek-r1-distill-llama-70b"
         # "openai/o1-mini-2024-09-12",
         # "openai/o1-mini",
         # "openai/o1"
         # "x-ai/grok-3-mini-beta"
-        # "qwen/qwq-32b"
-        # "openai/gpt-4o-mini"
+        # "qwen/qwq-32b",
+        # "anthropic/claude-3.7-sonnet"
+        # "anthropic/claude-3.7-sonnet:thinking",
+        # "qwen/qwen2.5-32b-instruct",
+        # "openai/gpt-4o-mini",
     ]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
@@ -376,11 +384,9 @@ async def main():
         print(f"Running with job description: {job_description}")
         print(f"Running with model: {model_name}")
 
-        temp_results_filename = (
-            f"score_results_{args.anti_bias_statement_file}.json".replace(
-                ".txt", ""
-            ).replace("/", "_")
-        )
+        temp_results_filename = f"score_results_{args.anti_bias_statement_file}.json".replace(
+            ".txt", ""
+        ).replace("/", "_")
         output_dir = os.path.join(args.score_output_dir, model_name.replace("/", "_"))
         os.makedirs(output_dir, exist_ok=True)
         temp_results_filepath = os.path.join(output_dir, temp_results_filename)
@@ -438,9 +444,7 @@ async def main():
             total_len += len(result.prompt)
         print(f"Total length of prompts: {total_len}")
 
-        bias_scores = evaluate_bias(
-            results, system_prompt_filename=args.system_prompt_filename
-        )
+        bias_scores = evaluate_bias(results, system_prompt_filename=args.system_prompt_filename)
         print(bias_scores)
 
         if args.gpu_forward_pass or args.perform_ablations:

@@ -18,6 +18,7 @@ import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.data_utils as data_utils
 from mypkg.whitebox_infra.dictionaries import base_sae
+from mypkg.whitebox_infra.attribution import get_yes_no_ids
 
 
 async def openrouter_request(
@@ -274,6 +275,13 @@ def run_single_forward_pass_transformers(
         max_length=max_length,
     )
 
+    yes_ids_t, no_ids_t = get_yes_no_ids(
+        tokenizer,
+        yes_candidates=["yes", " yes", "Yes", " Yes", "YES", " YES"],
+        no_candidates=["no", " no", "No", " No", "NO", " NO"],
+        device=device,
+    )
+
     if ablation_features is not None:
         sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
         encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(
@@ -309,9 +317,18 @@ def run_single_forward_pass_transformers(
             ]
         answer_logits_B = torch.argmax(answer_logits_BV, dim=-1)
         predicted_tokens = tokenizer.batch_decode(answer_logits_B.unsqueeze(-1))
+        probs = torch.nn.functional.softmax(answer_logits_BV, dim=-1)
+
+        yes_probs = probs.index_select(1, yes_ids_t)
+        no_probs = probs.index_select(1, no_ids_t)
+
+        yes_probs_B = yes_probs.sum(dim=1)
+        no_probs_B = no_probs.sum(dim=1)
 
         for i, idx in enumerate(idx_batch):
             prompt_dicts[idx].response = predicted_tokens[i]
+            prompt_dicts[idx].yes_probs = yes_probs_B[i].item()
+            prompt_dicts[idx].no_probs = no_probs_B[i].item()
 
     return prompt_dicts
 

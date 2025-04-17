@@ -174,6 +174,8 @@ async def main():
     python mypkg/vllm_inference.py --gpu_inference --vllm_model_name mistralai/Ministral-8B-Instruct-2410 --political_orientation ;
     python mypkg/vllm_inference.py --gpu_inference --vllm_model_name google/gemma-2-9b-it --political_orientation
 
+    python mypkg/vllm_inference.py --downsample 20 --system_prompt_filename yes_no.txt --gpu_forward_pass --vllm_model_name google/gemma-2-2b-it
+
     python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""

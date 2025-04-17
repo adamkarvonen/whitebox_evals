@@ -31,6 +31,7 @@ from mypkg.pipeline.infra.hiring_bias_prompts import (
     create_all_prompts_hiring_bias,
     create_all_prompts_anthropic,
     evaluate_bias,
+    evaluate_bias_probs,
     filter_anthropic_df,
     modify_anthropic_filled_templates,
 )
@@ -147,7 +148,10 @@ model_features = {
         5286,
         4204,
         428,
-    ]
+    ],
+    "google/gemma-2-2b-it": [
+        3513,
+    ],
 }
 
 REASONING_MODELS = [
@@ -326,20 +330,21 @@ async def main():
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
-    job_descriptions = ["meta_job_description.txt"]
+    job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
+    # job_descriptions = ["meta_job_description.txt"]
     # job_descriptions = ["long_meta_job_description_v2.txt"]
     # job_descriptions = ["short_meta_job_description.txt"]
     # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
     # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
 
     model_names = [
+        "google/gemma-2-2b-it",
         # "google/gemma-2-9b-it",
         # "google/gemma-2-27b-it",
         # "mistralai/Ministral-8B-Instruct-2410",
         # "mistralai/Mistral-Small-24B-Instruct-2501",
         # "openai/gpt-4o-2024-08-06",
-        "deepseek/deepseek-r1-distill-llama-70b"
+        # "deepseek/deepseek-r1-distill-llama-70b"
         # "openai/o1-mini-2024-09-12",
         # "openai/o1-mini",
         # "openai/o1"
@@ -437,6 +442,10 @@ async def main():
             results, system_prompt_filename=args.system_prompt_filename
         )
         print(bias_scores)
+
+        if args.gpu_forward_pass or args.perform_ablations:
+            bias_probs = evaluate_bias_probs(results)
+            print("\n\n\n", bias_probs)
 
         save_evaluation_results(
             args,

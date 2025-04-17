@@ -29,6 +29,17 @@ def collect_token_ids(tokenizer, candidates):
     return list(token_ids)
 
 
+def get_yes_no_ids(
+    tokenizer, yes_candidates: list[str], no_candidates: list[str], device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    yes_ids = collect_token_ids(tokenizer, yes_candidates)
+    no_ids = collect_token_ids(tokenizer, no_candidates)
+
+    yes_ids_t = torch.tensor(yes_ids).to(device)  # for indexing
+    no_ids_t = torch.tensor(no_ids).to(device)
+
+    return yes_ids_t, no_ids_t
+
 def make_yes_no_loss_fn(
     tokenizer,
     device: torch.device,
@@ -36,11 +47,7 @@ def make_yes_no_loss_fn(
     no_candidates: list[str],
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     # Collect sets of IDs
-    yes_ids = collect_token_ids(tokenizer, yes_candidates)
-    no_ids = collect_token_ids(tokenizer, no_candidates)
-
-    yes_ids_t = torch.tensor(yes_ids).to(device)  # for indexing
-    no_ids_t = torch.tensor(no_ids).to(device)
+    yes_ids_t, no_ids_t = get_yes_no_ids(tokenizer, yes_candidates, no_candidates, device)
 
     def yes_no_loss_fn(next_token_logits_BV: torch.Tensor, labels_B: torch.Tensor):
         # Gather the logits for yes_ids and no_ids

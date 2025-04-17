@@ -729,8 +729,8 @@ def evaluate_bias_probs(
 
 
 def process_hiring_bias_resumes_prompts(
-    prompts: list[ResumePromptResult], args
-) -> tuple[list[str], list[int]]:
+    prompts: list[ResumePromptResult], args: HiringBiasArgs
+) -> tuple[list[str], list[int], list[ResumePromptResult]]:
     """
     Process a list of ResumePromptResult objects into two lists:
     1. A list of prompt strings
@@ -744,6 +744,7 @@ def process_hiring_bias_resumes_prompts(
     - prompt_strings: List of strings (the prompt field from each ResumePromptResult)
     - labels: List of binary values (0 or 1)
     """
+    prompt_details = []
     prompt_strings = []
     labels = []
 
@@ -763,43 +764,35 @@ def process_hiring_bias_resumes_prompts(
             if prompt_result.gender != "Female":
                 continue
             if prompt_result.pregnancy_added:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(1)
             else:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(0)
 
         elif args.employment_gap:
             # If employment_gap arg is true, use employment_gap_added as the label
             if prompt_result.employment_gap_added:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(1)
             else:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(0)
 
         elif args.political_orientation:
             # Only include prompts where political_orientation_added is True
-            if prompt_result.political_orientation_added:
-                prompt_strings.append(prompt_result.prompt)
-                # Use politics field to determine label
-                # Assuming politics can be "conservative" or "liberal"
-                if prompt_result.politics.lower() == "republican":
-                    labels.append(0)
-                else:  # "liberal"
-                    labels.append(1)
+            if not prompt_result.political_orientation_added:
+                continue
+            # Use politics field to determine label
+            # Assuming politics can be "conservative" or "liberal"
+            if prompt_result.politics.lower() == "republican":
+                labels.append(0)
+            else:  # "liberal"
+                labels.append(1)
 
         elif args.race:
-            # If none of the special args are true, use race as the label
-            prompt_strings.append(prompt_result.prompt)
             # Assuming race can be "white" or "black"
             if prompt_result.race.lower() == "white":
                 labels.append(0)
             else:  # "black"
                 labels.append(1)
         elif args.gender:
-            # If none of the special args are true, use gender as the label
-            prompt_strings.append(prompt_result.prompt)
             if prompt_result.gender.lower() == "male":
                 labels.append(0)
             else:  # "female"
@@ -807,4 +800,7 @@ def process_hiring_bias_resumes_prompts(
         else:
             raise ValueError("No valid label found")
 
-    return prompt_strings, labels
+        prompt_details.append(prompt_result)
+        prompt_strings.append(prompt_result.prompt)
+
+    return prompt_strings, labels, prompt_details

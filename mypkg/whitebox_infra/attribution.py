@@ -73,6 +73,12 @@ def make_yes_no_loss_fn(
 
     return yes_no_loss_fn
 
+# def make_cot_loss_fn(
+#     tokenizer: AutoTokenizer,
+#     device: torch.device,
+#     prompt_details: list[ResumePromptResult],
+#     input_ids: torch.Tensor,
+
 
 def view_outputs(
     tokenizer, all_input_ids: torch.Tensor, all_answer_logits: torch.Tensor
@@ -356,12 +362,13 @@ def get_effects(
     chosen_layers: list[int],
     device: torch.device,
     verbose: bool = False,
+    cot_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, list]]:
     effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
     error_effect = 0
     predicted_tokens = {"labels": [], "predicted_tokens": []}
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, prompt_details = batch
 
         model_inputs = {
             "input_ids": input_ids,
@@ -473,7 +480,7 @@ def get_activations(
     effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device, dtype=torch.float32)
 
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, prompt_details = batch
 
         model_inputs = {
             "input_ids": input_ids,

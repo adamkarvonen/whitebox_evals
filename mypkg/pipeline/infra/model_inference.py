@@ -222,7 +222,7 @@ def run_inference_transformers(
         submodule.register_forward_hook(ablation_hook)
 
     for batch in tqdm(dataloader, desc="Processing prompts"):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, prompt_details = batch
         model_inputs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -295,7 +295,7 @@ def run_single_forward_pass_transformers(
         submodule.register_forward_hook(ablation_hook)
 
     for batch in tqdm(dataloader, desc="Processing prompts"):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, prompt_details = batch
         model_inputs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,

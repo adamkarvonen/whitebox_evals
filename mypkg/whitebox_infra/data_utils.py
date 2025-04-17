@@ -7,6 +7,8 @@ import einops
 from datasets import load_dataset
 from typing import Optional
 
+from pipeline.infra.hiring_bias_prompts import ResumePromptResult
+
 
 def dataset_to_df(dataset_name: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if dataset_name == "bias_in_bios":
@@ -80,6 +82,7 @@ def filter_and_balance_professions(
 def create_simple_dataloader(
     texts: list[str],
     labels: list[int],
+    prompt_details: list[ResumePromptResult],
     model_name: str,
     device: torch.device,
     batch_size: int = 8,
@@ -108,6 +111,7 @@ def create_simple_dataloader(
     assert padding_side in ["left", "right"]
 
     assert len(texts) == len(labels)
+    assert len(texts) == len(prompt_details)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -132,6 +136,7 @@ def create_simple_dataloader(
             encoded["attention_mask"],
             labels,
             list(range(len(texts))),
+            prompt_details,
             strict=True,
         )
     )
@@ -162,7 +167,9 @@ def create_simple_dataloader(
         padded_attention_masks = []
         labels_batch = []
         idx_batch = []
-        for input_ids, attention_mask, label, idx in batch:
+        prompt_details_batch = []
+
+        for input_ids, attention_mask, label, idx, prompt_detail in batch:
             pad_length = max_len - len(input_ids)
             if padding_side == "right":
                 padded_input_ids.append(
@@ -178,11 +185,14 @@ def create_simple_dataloader(
                 raise ValueError(f"Invalid padding side: {padding_side}")
             labels_batch.append(label)
             idx_batch.append(idx)
+            prompt_details_batch.append(prompt_detail)
+
         return (
             torch.tensor(padded_input_ids, device=device),
             torch.tensor(padded_attention_masks, device=device),
             torch.tensor(labels_batch, dtype=torch.long, device=device),
             torch.tensor(idx_batch, dtype=torch.long, device=device),
+            prompt_details_batch,
         )
 
     # Create the DataLoader using our custom collate function.

@@ -19,6 +19,7 @@ from dataclasses import asdict
 import itertools
 import gc
 import time
+from typing import Optional
 
 from mypkg.eval_config import EvalConfig
 from mypkg.pipeline.setup.dataset import (
@@ -42,6 +43,22 @@ OPENROUTER_NAME_LOOKUP = {
     "mistralai/Ministral-8B-Instruct-2410": "mistralai/ministral-8b",
     "mistralai/Mistral-Small-24B-Instruct-2501": "mistralai/mistral-small-3.1-24b-instruct",
 }
+
+
+# Moved Logger class to top level
+class Logger:
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, "w", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
 
 
 def save_evaluation_results(
@@ -162,37 +179,8 @@ REASONING_MODELS = [
 ]
 
 
-async def main():
-    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
-
-    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
-    # Set up logging to file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
-
-    start_time = time.time()
-
-    # Create a custom logger that writes to both file and console
-    class Logger:
-        def __init__(self, filename):
-            self.terminal = sys.stdout
-            self.log = open(filename, "w", encoding="utf-8")
-
-        def write(self, message):
-            self.terminal.write(message)
-            self.log.write(message)
-            self.log.flush()
-
-        def flush(self):
-            self.terminal.flush()
-            self.log.flush()
-
-    sys.stdout = Logger(log_file)
-
+# Moved argument parsing to a separate function
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--industry",
@@ -268,6 +256,19 @@ async def main():
 
     args = parser.parse_args()
 
+    return args
+
+
+async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_names: Optional[list[str]] = None) -> dict:
+    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
+
+    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
+
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
+    os.makedirs(cache_dir, exist_ok=True)
+
+    start_time = time.time()
+
     if sum([args.political_orientation, args.pregnancy, args.employment_gap]) > 1:
         raise ValueError(
             "Only one of political orientation, pregnancy, or employment gap can be true"
@@ -341,25 +342,26 @@ async def main():
     # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
     # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
 
-    model_names = [
-        "google/gemma-2-2b-it",
-        # "google/gemma-2-9b-it",
-        # "google/gemma-2-27b-it",
-        # "mistralai/Ministral-8B-Instruct-2410",
-        # "mistralai/Mistral-Small-24B-Instruct-2501",
-        # "deepseek/deepseek-r1",
-        # "openai/gpt-4o-2024-08-06",
-        # "deepseek/deepseek-r1-distill-llama-70b"
-        # "openai/o1-mini-2024-09-12",
-        # "openai/o1-mini",
-        # "openai/o1"
-        # "x-ai/grok-3-mini-beta"
-        # "qwen/qwq-32b",
-        # "anthropic/claude-3.7-sonnet"
-        # "anthropic/claude-3.7-sonnet:thinking",
-        # "qwen/qwen2.5-32b-instruct",
-        # "openai/gpt-4o-mini",
-    ]
+    if model_names is None:
+        model_names = [
+            "google/gemma-2-2b-it",
+            # "google/gemma-2-9b-it",
+            # "google/gemma-2-27b-it",
+            # "mistralai/Ministral-8B-Instruct-2410",
+            # "mistralai/Mistral-Small-24B-Instruct-2501",
+            # "deepseek/deepseek-r1",
+            # "openai/gpt-4o-2024-08-06",
+            # "deepseek/deepseek-r1-distill-llama-70b"
+            # "openai/o1-mini-2024-09-12",
+            # "openai/o1-mini",
+            # "openai/o1"
+            # "x-ai/grok-3-mini-beta"
+            # "qwen/qwq-32b",
+            # "anthropic/claude-3.7-sonnet"
+            # "anthropic/claude-3.7-sonnet:thinking",
+            # "qwen/qwen2.5-32b-instruct",
+            # "openai/gpt-4o-mini",
+        ]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
 
@@ -375,6 +377,7 @@ async def main():
         max_completion_tokens = None
 
     max_completion_tokens = None
+
 
     for job_description, model_name in itertools.product(job_descriptions, model_names):
         eval_config.anti_bias_statement_file = args.anti_bias_statement_file
@@ -487,6 +490,27 @@ async def main():
     end_time = time.time()
     print(f"Total time taken: {end_time - start_time:.2f} seconds")
 
+    return temp_results # Return the collected results
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Setup moved here
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+    log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
+    original_stdout = sys.stdout # Keep track of the original stdout
+    sys.stdout = Logger(log_file)
+
+    try:
+        args = parse_args()
+        print(args)
+        raise ValueError("Not implemented")
+        # Pass args, cache_dir, and timestamp to main
+        results = asyncio.run(main(args, cache_dir, timestamp))
+        # Optionally print or process returned results here
+        # print("Final results dictionary returned by main:")
+        # print(json.dumps(results, indent=4))
+    finally:
+        # Ensure stdout is reset and logger is closed even if errors occur
+        sys.stdout.log.close()
+        sys.stdout = original_stdout # Restore original stdout

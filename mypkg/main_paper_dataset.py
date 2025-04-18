@@ -145,7 +145,9 @@ def balanced_downsample(df, n_samples, random_seed=42):
     balanced_sample = df[df["Resume_str"].isin(sampled_resumes)]
 
     print(f"Downsampled to {len(sampled_resumes)} unique resumes")
-    print(f"Total samples after maintaining demographic variations: {len(balanced_sample)}")
+    print(
+        f"Total samples after maintaining demographic variations: {len(balanced_sample)}"
+    )
 
     return balanced_sample
 
@@ -259,7 +261,12 @@ def parse_args():
     return args
 
 
-async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_names: Optional[list[str]] = None) -> dict:
+async def main(
+    args: argparse.Namespace,
+    cache_dir: str,
+    timestamp: str,
+    model_names: Optional[list[str]] = None,
+) -> dict:
     """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
 
     python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
@@ -378,7 +385,6 @@ async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_n
 
     max_completion_tokens = None
 
-
     for job_description, model_name in itertools.product(job_descriptions, model_names):
         eval_config.anti_bias_statement_file = args.anti_bias_statement_file
         eval_config.job_description_file = job_description
@@ -387,9 +393,11 @@ async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_n
         print(f"Running with job description: {job_description}")
         print(f"Running with model: {model_name}")
 
-        temp_results_filename = f"score_results_{args.anti_bias_statement_file}.json".replace(
-            ".txt", ""
-        ).replace("/", "_")
+        temp_results_filename = (
+            f"score_results_{args.anti_bias_statement_file}.json".replace(
+                ".txt", ""
+            ).replace("/", "_")
+        )
         output_dir = os.path.join(args.score_output_dir, model_name.replace("/", "_"))
         os.makedirs(output_dir, exist_ok=True)
         temp_results_filepath = os.path.join(output_dir, temp_results_filename)
@@ -447,7 +455,9 @@ async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_n
             total_len += len(result.prompt)
         print(f"Total length of prompts: {total_len}")
 
-        bias_scores = evaluate_bias(results, system_prompt_filename=args.system_prompt_filename)
+        bias_scores = evaluate_bias(
+            results, system_prompt_filename=args.system_prompt_filename
+        )
         print(bias_scores)
 
         if args.gpu_forward_pass or args.perform_ablations:
@@ -490,7 +500,7 @@ async def main(args: argparse.Namespace, cache_dir: str, timestamp: str, model_n
     end_time = time.time()
     print(f"Total time taken: {end_time - start_time:.2f} seconds")
 
-    return temp_results # Return the collected results
+    return temp_results  # Return the collected results
 
 
 if __name__ == "__main__":
@@ -498,7 +508,7 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cache_dir = os.path.join(os.path.dirname(__file__), "cache")
     log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
-    original_stdout = sys.stdout # Keep track of the original stdout
+    original_stdout = sys.stdout  # Keep track of the original stdout
     sys.stdout = Logger(log_file)
 
     try:
@@ -513,4 +523,4 @@ if __name__ == "__main__":
     finally:
         # Ensure stdout is reset and logger is closed even if errors occur
         sys.stdout.log.close()
-        sys.stdout = original_stdout # Restore original stdout
+        sys.stdout = original_stdout  # Restore original stdout

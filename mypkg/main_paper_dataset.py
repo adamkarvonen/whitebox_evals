@@ -374,7 +374,10 @@ async def main(
 
     model_names_seen = set()
 
-    if eval_config.system_prompt_filename == "yes_no_cot.txt":
+    if (
+        eval_config.system_prompt_filename == "yes_no_cot.txt"
+        or eval_config.system_prompt_filename == "yes_no_qualifications.txt"
+    ):
         max_completion_tokens = 200
     else:
         max_completion_tokens = 5
@@ -513,8 +516,6 @@ if __name__ == "__main__":
 
     try:
         args = parse_args()
-        print(args)
-        raise ValueError("Not implemented")
         # Pass args, cache_dir, and timestamp to main
         results = asyncio.run(main(args, cache_dir, timestamp))
         # Optionally print or process returned results here

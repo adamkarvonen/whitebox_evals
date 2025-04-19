@@ -93,7 +93,7 @@ def test_forward_pass():
         model_name="google/gemma-2-2b-it",
         anti_bias_statement_file="v1.txt",
         downsample=5,
-        output_dir="attribution_results",
+        output_dir="test_attribution_results",
     )
 
     all_test_data = attribution_experiment.main(

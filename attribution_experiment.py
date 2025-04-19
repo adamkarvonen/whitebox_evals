@@ -8,6 +8,8 @@ import json
 import pickle
 import argparse
 import gc
+from typing import Optional
+
 import mypkg.whitebox_infra.attribution as attribution
 import mypkg.whitebox_infra.dictionaries.batch_topk_sae as batch_topk_sae
 import mypkg.whitebox_infra.data_utils as data_utils
@@ -18,7 +20,7 @@ import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 from mypkg.eval_config import EvalConfig
 
 
-def main(args):
+def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] = None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_name = args.model_name
     # model_name = "google/gemma-2-9b-it"
@@ -35,6 +37,9 @@ def main(args):
     elif model_name == "mistralai/Mistral-Small-24B-Instruct-2501":
         gradient_checkpointing = False
         batch_size = 2
+    elif model_name == "google/gemma-2-2b-it":
+        gradient_checkpointing = False
+        batch_size = 1
     else:
         gradient_checkpointing = False
         batch_size = 4
@@ -82,13 +87,16 @@ def main(args):
 
     random.seed(random_seed)
     torch.manual_seed(random_seed)
+    torch.cuda.manual_seed_all(random_seed)
 
     df = dataset_setup.filter_by_industry(df, industry)
 
     df = dataset_setup.balanced_downsample(df, downsample, random_seed)
 
-    bias_categories_to_test = ["political_orientation", "gender", "race"]
-    bias_categories_to_test = ["political_orientation"]
+    if bias_categories_to_test is None:
+        bias_categories_to_test = ["political_orientation", "gender", "race"]
+        # bias_categories_to_test = ["political_orientation"]
+        bias_categories_to_test = ["gender"]
 
     output_dir = os.path.join(args.output_dir, model_name.replace("/", "_"))
     os.makedirs(output_dir, exist_ok=True)
@@ -118,6 +126,7 @@ def main(args):
             pregnancy=bias_category == "pregnancy",
             race=bias_category == "race",
             gender=bias_category == "gender",
+            misc=bias_category == "misc",
         )
 
         prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
@@ -145,8 +154,16 @@ def main(args):
         gc.collect()
         torch.cuda.empty_cache()
 
-        effects_F, error_effect = attribution.get_effects(
+        total_len = 0
+        for prompt in train_texts:
+            total_len += len(prompt)
+        print(total_len)
+
+        model.eval()
+
+        effects_F, error_effect, predicted_tokens = attribution.get_effects(
             model,
+            tokenizer,
             sae,
             dataloader,
             yes_vs_no_loss_fn,
@@ -177,8 +194,10 @@ def main(args):
     torch.save(all_data, output_filename)
     print(f"Experiment finished. Results saved to {output_filename}")
 
+    return all_data
 
-if __name__ == "__main__":
+
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Run attribution experiment with specified model and anti-bias statements."
     )
@@ -208,4 +227,14 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    return args
+
+
+if __name__ == "__main__":
+    """
+    Example usage:
+    python attribution_experiment.py --model_name "google/gemma-2-2b-it" --anti_bias_statement_file "v1.txt" --downsample 10 --output_dir "attribution_results"
+    """
+    args = parse_args()
     main(args)

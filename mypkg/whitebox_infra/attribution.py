@@ -77,6 +77,26 @@ def make_yes_no_loss_fn(
     return yes_no_loss_fn
 
 
+def make_max_logprob_loss_fn(
+    device: torch.device,
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def max_logprob_loss_fn(next_token_logits_BV: torch.Tensor, labels_B: torch.Tensor):
+        # convert logits to log‑probs
+        log_probs = torch.nn.functional.log_softmax(next_token_logits_BV, dim=-1)
+        # highest‑probability token per example
+        max_log_probs_B = log_probs.max(dim=1).values  # shape [batch_size]
+
+        # Apply the label-dependent logic:
+        # For label=0: use diff as is
+        # For label=1: flip the sign of diff
+        label_factor = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
+        max_log_probs_B = max_log_probs_B * label_factor
+
+        return -max_log_probs_B.mean()  # negate so lower = better
+
+    return max_logprob_loss_fn
+
+
 def view_outputs(
     tokenizer, all_input_ids: torch.Tensor, all_answer_logits: torch.Tensor
 ):
@@ -439,6 +459,8 @@ def compute_activations(
     encoded_acts_BLF = sae.encode(layer_acts_BLD)
 
     encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
+
+    encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
 
     pos_mask_B = labels == 1
     neg_mask_B = labels == 0

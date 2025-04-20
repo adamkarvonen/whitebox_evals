@@ -1,6 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 from typing import Optional
+import contextlib
 
 import mypkg.whitebox_infra.dictionaries.base_sae as base_sae
 import mypkg.whitebox_infra.dictionaries.batch_topk_sae as batch_topk_sae
@@ -253,15 +254,21 @@ class EarlyStopException(Exception):
     pass
 
 
-@torch.no_grad()
 def collect_activations(
     model: AutoModelForCausalLM,
     submodule: torch.nn.Module,
     inputs_BL: dict[str, torch.Tensor],
+    use_no_grad: bool = True,
 ) -> torch.Tensor:
     """
     Registers a forward hook on the submodule to capture the residual (or hidden)
     activations. We then raise an EarlyStopException to skip unneeded computations.
+
+    Args:
+        model: The model to run.
+        submodule: The submodule to hook into.
+        inputs_BL: The inputs to the model.
+        use_no_grad: Whether to run the forward pass within a `torch.no_grad()` context. Defaults to True.
     """
     activations_BLD = None
 
@@ -280,8 +287,13 @@ def collect_activations(
 
     handle = submodule.register_forward_hook(gather_target_act_hook)
 
+    # Determine the context manager based on the flag
+    context_manager = torch.no_grad() if use_no_grad else contextlib.nullcontext()
+
     try:
-        _ = model(**inputs_BL)
+        # Use the selected context manager
+        with context_manager:
+            _ = model(**inputs_BL)
     except EarlyStopException:
         pass
     except Exception as e:
@@ -289,5 +301,12 @@ def collect_activations(
         raise
     finally:
         handle.remove()
+
+    if activations_BLD is None:
+        # This should ideally not happen if the hook worked and EarlyStopException was raised,
+        # but handle it just in case.
+        raise RuntimeError(
+            "Failed to collect activations. The hook might not have run correctly."
+        )
 
     return activations_BLD

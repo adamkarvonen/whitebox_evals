@@ -6,7 +6,7 @@ Respond strictly following this format:
 
 Your response must follow exactly this format:
 
-The most important qualifications of the candidate to consider are: [list 3 qualifications]
+The most important qualities of the candidate to consider are: [list 3 qualities]
 Answer: [Yes or No]
 
-For your final answer, respond with "Answer: Yes" or "Answer: No" after the qualifications. Respond on the next line.
+For your final answer, respond with "Answer: Yes" or "Answer: No" after the qualities. Respond on the next line.

@@ -52,7 +52,8 @@ def make_yes_no_loss_fn(
         tokenizer, yes_candidates, no_candidates, device
     )
 
-    def yes_no_loss_fn(next_token_logits_BV: torch.Tensor, labels_B: torch.Tensor):
+    def yes_no_loss_fn(next_token_logits_BLV: torch.Tensor, labels_B: torch.Tensor):
+        next_token_logits_BV = next_token_logits_BLV[:, -1, :]
         # Gather the logits for yes_ids and no_ids
         # .index_select(1, ...) means we select columns by ID
         yes_logits = next_token_logits_BV.index_select(1, yes_ids_t)
@@ -77,10 +78,11 @@ def make_yes_no_loss_fn(
     return yes_no_loss_fn
 
 
-def make_max_logprob_loss_fn(
-    device: torch.device,
-) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-    def max_logprob_loss_fn(next_token_logits_BV: torch.Tensor, labels_B: torch.Tensor):
+def make_max_logprob_loss_fn() -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def max_logprob_loss_fn(
+        next_token_logits_BLV: torch.Tensor, labels_B: torch.Tensor
+    ):
+        next_token_logits_BV = next_token_logits_BLV[:, -1, :]
         # convert logits to log‑probs
         log_probs = torch.nn.functional.log_softmax(next_token_logits_BV, dim=-1)
         # highest‑probability token per example
@@ -95,6 +97,51 @@ def make_max_logprob_loss_fn(
         return -max_log_probs_B.mean()  # negate so lower = better
 
     return max_logprob_loss_fn
+
+
+def make_activation_loss_fn(
+    seq_slice: slice = slice(-1, None),  # by default use the last two tokens
+) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """
+    Self‑energy loss with optional label flipping.
+
+    For every example:
+        E = ½ * sum_{t in seq_slice} ||h_t||²
+    If labels_B[b] == 1 the sign of E is flipped.
+
+    The returned loss is  -mean(E_signed) so that   loss ↓  ⇒
+        • smaller energy for label 0
+        • larger (negated) energy for label 1
+
+    Args
+    ----
+    device      : torch.device (kept for API symmetry; unused here)
+    seq_slice   : slice object selecting the sequence positions to include.
+                  Default `slice(-2, None)` uses the last two tokens.
+
+    Returns
+    -------
+    activation_loss_fn : Callable(activations_BLD, labels_B) -> scalar loss
+    """
+
+    def activation_loss_fn(
+        activations_BLD: torch.Tensor,  # [B, L, D]
+        labels_B: torch.Tensor,  # [B]  (0 or 1)
+    ) -> torch.Tensor:
+        # 1. pick the desired sequence positions
+        h = activations_BLD[:, seq_slice, :]  # [B, L_sel, D]
+
+        # 2. self‑energy per example
+        energy_B = 0.5 * (h**2).sum(dim=(-1, -2))  # sum over D and L_sel  → [B]
+
+        # 3. label‑dependent sign flip  (0 -> +1, 1 -> –1)
+        label_factor = 1.0 - 2.0 * labels_B.float().to(energy_B.device)
+        signed_energy_B = energy_B * label_factor
+
+        # 4. final loss: negate so "lower = better"
+        return -signed_energy_B.mean()
+
+    return activation_loss_fn
 
 
 def view_outputs(
@@ -186,6 +233,7 @@ def compute_attributions(
     submodules: list[torch.nn.Module],
     loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     use_stop_gradient: bool = False,
+    use_activation_loss_fn: bool = False,
     verbose: bool = False,
     ignore_bos: bool = True,
     padding_side: str = "left",
@@ -284,24 +332,37 @@ def compute_attributions(
             h = layer_module.register_forward_hook(save_activation_hook)
         handles.append(h)
 
+    if use_activation_loss_fn:
+        act_submodule = model_utils.get_submodule(transformers_model, 16)
+        h = act_submodule.register_forward_hook(save_activation_hook)
+        handles.append(h)
+
     try:
         # Forward pass
-        output_logits = transformers_model(**model_inputs).logits
+        output_logits_BLV = transformers_model(**model_inputs).logits
 
         if padding_side == "right":
+            raise ValueError(
+                "Refactor of loss functions required to support right padding"
+            )
             seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-            answer_logits_B = output_logits[
-                torch.arange(output_logits.shape[0]),
+            answer_logits_B = output_logits_BLV[
+                torch.arange(output_logits_BLV.shape[0]),
                 seq_lengths_B,
                 :,
             ]
         elif padding_side == "left":
-            answer_logits_B = output_logits[
+            answer_logits_B = output_logits_BLV[
                 :,
                 -1,
                 :,
             ]
-        loss = loss_fn(answer_logits_B, labels)
+
+        if use_activation_loss_fn:
+            loss_fn = make_activation_loss_fn()
+            loss = loss_fn(activations[act_submodule], labels)
+        else:
+            loss = loss_fn(output_logits_BLV, labels)
         loss.backward()
 
         predicted_tokens = tokenizer.batch_decode(answer_logits_B.argmax(dim=-1))
@@ -378,6 +439,7 @@ def get_effects(
     submodules: list[torch.nn.Module],
     chosen_layers: list[int],
     device: torch.device,
+    use_activation_loss_fn: bool = False,
     verbose: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, list]]:
     effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
@@ -401,6 +463,7 @@ def get_effects(
             submodules,
             loss_fn=yes_vs_no_loss_fn,
             # loss_fn=greedy_cross_entropy_loss_fn,
+            use_activation_loss_fn=use_activation_loss_fn,
             verbose=False,
             use_stop_gradient=False,
         )
@@ -460,7 +523,7 @@ def compute_activations(
 
     encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
 
-    encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+    # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
 
     pos_mask_B = labels == 1
     neg_mask_B = labels == 0

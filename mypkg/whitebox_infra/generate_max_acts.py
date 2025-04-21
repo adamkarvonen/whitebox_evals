@@ -30,7 +30,7 @@ for model_name in model_names:
     if "mistral" in model_name:
         trainer_ids = [0, 1, 2, 3]
     else:
-        trainer_ids = [0]
+        trainer_ids = [131]
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=dtype, device_map=device

@@ -98,50 +98,24 @@ def make_max_logprob_loss_fn() -> Callable[[torch.Tensor, torch.Tensor], torch.T
 
     return max_logprob_loss_fn
 
+def activation_loss_fn(
+    activations_BLD: torch.Tensor,  # [B, L, D]
+    labels_B: torch.Tensor,  # [B]  (0 or 1)
+    seq_slice: slice = slice(-1, None),
+) -> torch.Tensor:
+    # 1. pick the desired sequence positions
+    h = activations_BLD[:, seq_slice, :]  # [B, L_sel, D]
 
-def make_activation_loss_fn(
-    seq_slice: slice = slice(-1, None),  # by default use the last two tokens
-) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-    """
-    Self‑energy loss with optional label flipping.
+    # 2. self‑energy per example
+    energy_B = 0.5 * (h**2).sum(dim=(-1, -2))  # sum over D and L_sel  → [B]
 
-    For every example:
-        E = ½ * sum_{t in seq_slice} ||h_t||²
-    If labels_B[b] == 1 the sign of E is flipped.
+    # 3. label‑dependent sign flip  (0 -> +1, 1 -> –1)
+    label_factor = 1.0 - 2.0 * labels_B.float().to(energy_B.device)
+    signed_energy_B = energy_B * label_factor
 
-    The returned loss is  -mean(E_signed) so that   loss ↓  ⇒
-        • smaller energy for label 0
-        • larger (negated) energy for label 1
+    # 4. final loss: negate so "lower = better"
+    return -signed_energy_B.mean()
 
-    Args
-    ----
-    device      : torch.device (kept for API symmetry; unused here)
-    seq_slice   : slice object selecting the sequence positions to include.
-                  Default `slice(-2, None)` uses the last two tokens.
-
-    Returns
-    -------
-    activation_loss_fn : Callable(activations_BLD, labels_B) -> scalar loss
-    """
-
-    def activation_loss_fn(
-        activations_BLD: torch.Tensor,  # [B, L, D]
-        labels_B: torch.Tensor,  # [B]  (0 or 1)
-    ) -> torch.Tensor:
-        # 1. pick the desired sequence positions
-        h = activations_BLD[:, seq_slice, :]  # [B, L_sel, D]
-
-        # 2. self‑energy per example
-        energy_B = 0.5 * (h**2).sum(dim=(-1, -2))  # sum over D and L_sel  → [B]
-
-        # 3. label‑dependent sign flip  (0 -> +1, 1 -> –1)
-        label_factor = 1.0 - 2.0 * labels_B.float().to(energy_B.device)
-        signed_energy_B = energy_B * label_factor
-
-        # 4. final loss: negate so "lower = better"
-        return -signed_energy_B.mean()
-
-    return activation_loss_fn
 
 
 def view_outputs(
@@ -268,6 +242,9 @@ def compute_attributions(
 
     assert padding_side in ["left", "right"]
 
+    if use_activation_loss_fn:
+        loss_fn = None
+
     # Make sure gradients are enabled for model parameters
     for param in transformers_model.parameters():
         param.requires_grad_(False)
@@ -359,8 +336,7 @@ def compute_attributions(
             ]
 
         if use_activation_loss_fn:
-            loss_fn = make_activation_loss_fn()
-            loss = loss_fn(activations[act_submodule], labels)
+            loss = activation_loss_fn(activations[act_submodule], labels)
         else:
             loss = loss_fn(output_logits_BLV, labels)
         loss.backward()

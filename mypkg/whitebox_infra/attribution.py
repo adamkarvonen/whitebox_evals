@@ -38,16 +38,16 @@ def make_yes_no_loss_fn(
         no_sum = no_logits.sum(dim=1)
 
         # difference per example
-        diff = yes_sum - no_sum  # shape [batch_size]
-        adjusted_diff = diff
+        diff_B = yes_sum - no_sum  # shape [batch_size]
+        adjusted_diff_B = diff_B
 
         # Apply the label-dependent logic:
         # For label=0: use diff as is
         # For label=1: flip the sign of diff
-        label_factor = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
-        adjusted_diff = diff * label_factor
+        label_factor_B = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
+        adjusted_diff_B = diff_B * label_factor_B
 
-        return adjusted_diff.mean()
+        return adjusted_diff_B.mean()
 
     return yes_no_loss_fn
 

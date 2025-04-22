@@ -31,15 +31,19 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+    trainer_id = 1
+
     if model_name == "google/gemma-2-27b-it":
         gradient_checkpointing = True
         batch_size = 1
+        trainer_id = 131
     elif model_name == "mistralai/Mistral-Small-24B-Instruct-2501":
         gradient_checkpointing = False
         batch_size = 2
     elif model_name == "google/gemma-2-2b-it":
         gradient_checkpointing = False
         batch_size = 1
+        trainer_id = 16
     else:
         gradient_checkpointing = False
         batch_size = 4
@@ -49,8 +53,6 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
         model.gradient_checkpointing_enable()
 
     chosen_layer_percentage = [25]
-
-    trainer_id = 1
 
     chosen_layers = []
     for layer_percent in chosen_layer_percentage:

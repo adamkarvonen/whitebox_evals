@@ -12,35 +12,6 @@ from mypkg.whitebox_infra.dictionaries import topk_sae, base_sae
 import mypkg.whitebox_infra.model_utils as model_utils
 
 
-def collect_token_ids(tokenizer, candidates):
-    """
-    Collect the set of token IDs that appear when tokenizing
-    any candidate string in `candidates`.
-    """
-    token_ids = set()
-    for c in candidates:
-        # add_special_tokens=False so we only get raw subwords
-        ids = tokenizer.encode(c, add_special_tokens=False)
-        if len(ids) > 1:
-            ids = ids[:1]
-        assert len(ids) == 1, f"Expected 1 token ID, got {len(ids)} for {c}"
-        token_ids.update(ids)
-
-    return list(token_ids)
-
-
-def get_yes_no_ids(
-    tokenizer, yes_candidates: list[str], no_candidates: list[str], device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
-    yes_ids = collect_token_ids(tokenizer, yes_candidates)
-    no_ids = collect_token_ids(tokenizer, no_candidates)
-
-    yes_ids_t = torch.tensor(yes_ids).to(device)  # for indexing
-    no_ids_t = torch.tensor(no_ids).to(device)
-
-    return yes_ids_t, no_ids_t
-
-
 def make_yes_no_loss_fn(
     tokenizer,
     device: torch.device,
@@ -48,8 +19,11 @@ def make_yes_no_loss_fn(
     no_candidates: list[str] = ["no", " no", "No", " No", "NO", " NO"],
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     # Collect sets of IDs
-    yes_ids_t, no_ids_t = get_yes_no_ids(
-        tokenizer, yes_candidates, no_candidates, device
+    yes_ids_t, no_ids_t = model_utils.get_yes_no_ids(
+        tokenizer,
+        device,
+        yes_candidates,
+        no_candidates,
     )
 
     def yes_no_loss_fn(next_token_logits_BLV: torch.Tensor, labels_B: torch.Tensor):
@@ -352,7 +326,7 @@ def compute_attributions(
         handles.append(h)
 
     if use_activation_loss_fn:
-        act_submodule = model_utils.get_submodule(transformers_model, 20)
+        act_submodule = model_utils.get_submodule(transformers_model, 12)
         h = act_submodule.register_forward_hook(save_activation_hook)
         handles.append(h)
 
@@ -382,8 +356,8 @@ def compute_attributions(
             logits_BLV = apply_logit_lens(
                 activations[act_submodule], transformers_model
             )
-            # yes_vs_no_loss_fn = make_yes_no_loss_fn(tokenizer, device=sae.W_dec.device)
-            yes_vs_no_loss_fn = make_max_logprob_loss_fn()
+            yes_vs_no_loss_fn = make_yes_no_loss_fn(tokenizer, device=sae.W_dec.device)
+            # yes_vs_no_loss_fn = make_max_logprob_loss_fn()
             loss = yes_vs_no_loss_fn(logits_BLV, labels)
             # loss = entropy_loss_fn(logits_BLV, labels)
         else:
@@ -487,7 +461,6 @@ def get_effects(
             chosen_layers,
             submodules,
             loss_fn=yes_vs_no_loss_fn,
-            # loss_fn=greedy_cross_entropy_loss_fn,
             use_activation_loss_fn=use_activation_loss_fn,
             verbose=False,
             use_stop_gradient=False,

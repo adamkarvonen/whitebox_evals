@@ -260,6 +260,67 @@ def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
     # return formatted_prompts
 
 
+def collect_token_ids(tokenizer: AutoTokenizer, candidates: list[str]) -> list[int]:
+    """
+    Collect the set of token IDs that appear when tokenizing
+    any candidate string in `candidates`.
+    """
+    token_ids = set()
+    for c in candidates:
+        # add_special_tokens=False so we only get raw subwords
+        ids = tokenizer.encode(c, add_special_tokens=False)
+        if len(ids) > 1:
+            ids = ids[:1]
+        assert len(ids) == 1, f"Expected 1 token ID, got {len(ids)} for {c}"
+        token_ids.update(ids)
+
+    return list(token_ids)
+
+
+def get_yes_no_ids(
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    yes_candidates: Optional[list[str]] = None,
+    no_candidates: Optional[list[str]] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if yes_candidates is None:
+        yes_candidates = ["yes", " yes", "Yes", " Yes", "YES", " YES"]
+    if no_candidates is None:
+        no_candidates = ["no", " no", "No", " No", "NO", " NO"]
+
+    yes_ids = collect_token_ids(tokenizer, yes_candidates)
+    no_ids = collect_token_ids(tokenizer, no_candidates)
+
+    yes_ids_t = torch.tensor(yes_ids).to(device)  # for indexing
+    no_ids_t = torch.tensor(no_ids).to(device)
+
+    return yes_ids_t, no_ids_t
+
+
+def get_yes_no_probs(
+    tokenizer: AutoTokenizer,
+    logits_BV: torch.Tensor,
+    yes_candidates: Optional[list[str]] = None,
+    no_candidates: Optional[list[str]] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    device = logits_BV.device
+    yes_ids_t, no_ids_t = get_yes_no_ids(
+        tokenizer,
+        yes_candidates=yes_candidates,
+        no_candidates=no_candidates,
+        device=device,
+    )
+
+    probs_BV = torch.nn.functional.softmax(logits_BV, dim=-1)
+    yes_probs = probs_BV.index_select(1, yes_ids_t)
+    no_probs = probs_BV.index_select(1, no_ids_t)
+
+    yes_probs_B = yes_probs.sum(dim=1)
+    no_probs_B = no_probs.sum(dim=1)
+
+    return yes_probs_B, no_probs_B
+
+
 def get_submodule(model: AutoModelForCausalLM, layer: int):
     """Gets the residual stream submodule"""
     model_name = model.config._name_or_path

@@ -68,40 +68,37 @@ MODEL_CONFIGS = {
 
 # Gemma-specific width information
 GEMMA_WIDTH_INFO = {
-    "google/gemma-2-2b-it":
-        {
-            16: {
-                25: "width_16k/average_l0_143",
-                50: "width_16k/average_l0_82",
-                75: "width_16k/average_l0_137",
-            },
-            65: {
-                25: "width_65k/average_l0_105",
-                50: "width_65k/average_l0_141",
-                75: "width_65k/average_l0_115",
-            },
+    "google/gemma-2-2b-it": {
+        16: {
+            25: "width_16k/average_l0_143",
+            50: "width_16k/average_l0_82",
+            75: "width_16k/average_l0_137",
         },
-    "google/gemma-2-9b-it":
-        {
-            16: {
-                25: "width_16k/average_l0_88",
-                50: "width_16k/average_l0_91",
-                75: "width_16k/average_l0_142",
-            },
-            131: {
-                25: "width_131k/average_l0_121",
-                50: "width_131k/average_l0_81",
-                75: "width_131k/average_l0_109",
-            },
+        65: {
+            25: "width_65k/average_l0_105",
+            50: "width_65k/average_l0_141",
+            75: "width_65k/average_l0_115",
         },
-    "google/gemma-2-27b-it":
-        {
-            131: {
-                25: "width_131k/average_l0_106",
-                50: "width_131k/average_l0_82",
-                75: "width_131k/average_l0_155",
-            },
+    },
+    "google/gemma-2-9b-it": {
+        16: {
+            25: "width_16k/average_l0_88",
+            50: "width_16k/average_l0_91",
+            75: "width_16k/average_l0_142",
         },
+        131: {
+            25: "width_131k/average_l0_121",
+            50: "width_131k/average_l0_81",
+            75: "width_131k/average_l0_109",
+        },
+    },
+    "google/gemma-2-27b-it": {
+        131: {
+            25: "width_131k/average_l0_106",
+            50: "width_131k/average_l0_82",
+            75: "width_131k/average_l0_155",
+        },
+    },
 }
 
 
@@ -162,6 +159,7 @@ def load_gemma_2_sae(
     )
     return sae
 
+
 def load_mistral_sae(
     model_name: str,
     device: torch.device,
@@ -169,7 +167,7 @@ def load_mistral_sae(
     layer_percent: int,
     trainer_id: int = 1,
 ):
-    layer, _ = get_layer_info(model_name, layer_percent)
+    layer = get_layer_info(model_name, layer_percent)
     if model_name == "mistralai/Ministral-8B-Instruct-2410":
         sae_repo = "adamkarvonen/ministral_saes"
         sae_path = f"mistralai_Ministral-8B-Instruct-2410_batch_top_k/resid_post_layer_{layer}/trainer_{trainer_id}/ae.pt"

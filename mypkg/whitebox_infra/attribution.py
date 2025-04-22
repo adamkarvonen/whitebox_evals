@@ -98,6 +98,41 @@ def make_max_logprob_loss_fn() -> Callable[[torch.Tensor, torch.Tensor], torch.T
 
     return max_logprob_loss_fn
 
+
+def entropy_loss_fn(
+    next_token_logits_BLV: torch.Tensor, labels_B: torch.Tensor
+) -> torch.Tensor:
+    """
+    Entropy‑based loss with optional label flipping.
+
+    next_token_logits_BLV : [B, L, |V|]
+        Batched logits over the vocabulary at every sequence position.
+    labels_B             : [B]  (0 or 1)
+        If label == 1 the sign of the entropy term is flipped.
+
+    Returns
+    -------
+    Scalar tensor – negative mean signed entropy (lower = better
+    under the same convention as the max‑log‑prob version).
+    """
+    # logits for the last token in each sequence  →  [B, |V|]
+    next_token_logits_BV = next_token_logits_BLV[:, -1, :]
+
+    # log‑probs and probs
+    log_probs_BV = torch.nn.functional.log_softmax(next_token_logits_BV, dim=-1)
+    probs_BV = log_probs_BV.exp()
+
+    # entropy per example  (‑Σ p log p)  →  [B]
+    entropy_B = -(probs_BV * log_probs_BV).sum(dim=-1)
+
+    # label‑dependent sign flip: 0 ↦ +1, 1 ↦ −1
+    label_factor = 1.0 - 2.0 * labels_B.float().to(entropy_B.device)
+    signed_entropy_B = entropy_B * label_factor
+
+    # negate so "lower loss" means "better" under this convention
+    return -signed_entropy_B.mean()
+
+
 def activation_loss_fn(
     activations_BLD: torch.Tensor,  # [B, L, D]
     labels_B: torch.Tensor,  # [B]  (0 or 1)
@@ -116,10 +151,14 @@ def activation_loss_fn(
     # 4. final loss: negate so "lower = better"
     return -signed_energy_B.mean()
 
-def apply_logit_lens(acts_BLD: torch.Tensor, model: AutoModelForCausalLM) -> torch.Tensor:
+
+def apply_logit_lens(
+    acts_BLD: torch.Tensor, model: AutoModelForCausalLM
+) -> torch.Tensor:
     acts_BLD = acts_BLD[:, -1:, :]
     logits_BLV = model.lm_head(model.model.norm(acts_BLD))
     return logits_BLV
+
 
 def view_outputs(
     tokenizer, all_input_ids: torch.Tensor, all_answer_logits: torch.Tensor
@@ -340,10 +379,13 @@ def compute_attributions(
 
         if use_activation_loss_fn:
             # loss = activation_loss_fn(activations[act_submodule], labels)
-            logits_BLV = apply_logit_lens(activations[act_submodule], transformers_model)
+            logits_BLV = apply_logit_lens(
+                activations[act_submodule], transformers_model
+            )
             # yes_vs_no_loss_fn = make_yes_no_loss_fn(tokenizer, device=sae.W_dec.device)
             yes_vs_no_loss_fn = make_max_logprob_loss_fn()
             loss = yes_vs_no_loss_fn(logits_BLV, labels)
+            # loss = entropy_loss_fn(logits_BLV, labels)
         else:
             loss = loss_fn(output_logits_BLV, labels)
         loss.backward()

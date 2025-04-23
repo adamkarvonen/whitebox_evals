@@ -1,15 +1,182 @@
 import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 import torch
 import einops
+from dataclasses import dataclass, field, fields
 
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from mypkg.whitebox_infra.dictionaries import topk_sae, base_sae
 import mypkg.whitebox_infra.model_utils as model_utils
+
+
+def get_results_per_label(
+    vals_BLF: torch.Tensor, labels_B: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    pos_mask_B = labels_B == 1
+    neg_mask_B = labels_B == 0
+
+    pos_vals_KLF = vals_BLF[pos_mask_B]
+    neg_vals_KLF = vals_BLF[neg_mask_B]
+    feat_dim = vals_BLF.size(-1)
+    device = vals_BLF.device
+
+    if pos_vals_KLF.numel():
+        pos_vals_KF = einops.reduce(
+            pos_vals_KLF.to(torch.float32), "K L F -> K F", "mean"
+        )
+        mean_pos_F = einops.reduce(pos_vals_KF, "K F -> F", "sum")
+    else:
+        mean_pos_F = torch.zeros(feat_dim, dtype=torch.float32, device=device)
+
+    if neg_vals_KLF.numel():
+        neg_vals_KF = einops.reduce(
+            neg_vals_KLF.to(torch.float32), "K L F -> K F", "mean"
+        )
+        mean_neg_F = einops.reduce(neg_vals_KF, "K F -> F", "sum")
+    else:
+        mean_neg_F = torch.zeros(feat_dim, dtype=torch.float32, device=device)
+
+    return mean_pos_F, mean_neg_F
+
+
+@dataclass
+class AttributionData:
+    D: int
+    F: int
+    device: torch.device | str = "cpu"
+
+    # tensors initialised in __post_init__
+    pos_acts_D: torch.Tensor = field(init=False)
+    neg_acts_D: torch.Tensor = field(init=False)
+    pos_sae_acts_F: torch.Tensor = field(init=False)
+    neg_sae_acts_F: torch.Tensor = field(init=False)
+    pos_sae_grads_F: torch.Tensor = field(init=False)
+    neg_sae_grads_F: torch.Tensor = field(init=False)
+    pos_effects_F: torch.Tensor = field(init=False)
+    neg_effects_F: torch.Tensor = field(init=False)
+
+    # running scalars
+    pos_error_effect: float = 0.0
+    neg_error_effect: float = 0.0
+    pos_yes_probs: float = 0.0
+    pos_no_probs: float = 0.0
+    neg_yes_probs: float = 0.0
+    neg_no_probs: float = 0.0
+    pos_count: int = 0
+    neg_count: int = 0
+
+    # token logs
+    pos_predicted_tokens: list[str] = field(default_factory=list)
+    neg_predicted_tokens: list[str] = field(default_factory=list)
+
+    # ──────────────────────────────────────────────────────────────────
+    def __post_init__(self):
+        zD = torch.zeros(self.D, device=self.device)
+        zF = torch.zeros(self.F, device=self.device)
+
+        self.pos_acts_D = zD.clone()
+        self.neg_acts_D = zD.clone()
+        self.pos_sae_acts_F = zF.clone()
+        self.neg_sae_acts_F = zF.clone()
+        self.pos_sae_grads_F = zF.clone()
+        self.neg_sae_grads_F = zF.clone()
+        self.pos_effects_F = zF.clone()
+        self.neg_effects_F = zF.clone()
+
+    def to(self, device: torch.device | str):
+        """Move all tensors to `device` (similar to nn.Module.to)."""
+        for f in fields(self):
+            v: Any = getattr(self, f.name)
+            if torch.is_tensor(v):
+                setattr(self, f.name, v.to(device))
+        self.device = device
+        return self
+
+    @torch.no_grad()
+    def update_from_batch(
+        self,
+        batch_results: dict[str, torch.Tensor | list[str]],
+    ):
+        """
+        Accumulate attribution stats from one minibatch already on `self.device`.
+        All variable names keep the *_suffix convention for shapes.
+        """
+        # ===== unpack =====
+        labels_B = batch_results["labels"]
+        predicted_tokens = batch_results["predicted_tokens"]  # list[str]
+
+        sae_acts_BLF = batch_results["encoded_acts_BLF"]
+        effects_BLF = batch_results["effects_BLF"]
+        grad_x_dot_decoder_BLF = batch_results["grad_x_dot_decoder_BLF"]
+        acts_BLD = batch_results["acts_BLD"]
+        error_effects_BLD = batch_results["error_effects_BLD"]
+
+        yes_log_probs_B = batch_results["yes_log_probs_B"]
+        no_log_probs_B = batch_results["no_log_probs_B"]
+
+        pos_mask_B = labels_B == 1
+        neg_mask_B = labels_B == 0
+
+        # ===== F-dim reductions =====
+        pos_sae_acts_F, neg_sae_acts_F = get_results_per_label(sae_acts_BLF, labels_B)
+        pos_grads_F, neg_grads_F = get_results_per_label(
+            grad_x_dot_decoder_BLF, labels_B
+        )
+        pos_effects_F, neg_effects_F = get_results_per_label(effects_BLF, labels_B)
+
+        # ===== D-dim reductions =====
+        pos_acts_D, neg_acts_D = get_results_per_label(acts_BLD, labels_B)
+
+        # ===== error-effect scalar =====
+        if pos_mask_B.any():
+            pos_error_effect = (
+                error_effects_BLD[pos_mask_B].mean(dim=(1, 2)).sum().item()
+            )
+            pos_yes_probs = yes_log_probs_B[pos_mask_B].sum().item()
+            pos_no_probs = no_log_probs_B[pos_mask_B].sum().item()
+        else:
+            pos_error_effect = 0.0
+            pos_yes_probs = 0.0
+            pos_no_probs = 0.0
+
+        if neg_mask_B.any():
+            neg_error_effect = (
+                error_effects_BLD[neg_mask_B].mean(dim=(1, 2)).sum().item()
+            )
+            neg_yes_probs = yes_log_probs_B[neg_mask_B].sum().item()
+            neg_no_probs = no_log_probs_B[neg_mask_B].sum().item()
+        else:
+            neg_error_effect = 0.0
+            neg_yes_probs = 0.0
+            neg_no_probs = 0.0
+
+        # ===== accumulate =====
+        self.pos_acts_D += pos_acts_D
+        self.neg_acts_D += neg_acts_D
+        self.pos_sae_acts_F += pos_sae_acts_F
+        self.neg_sae_acts_F += neg_sae_acts_F
+        self.pos_sae_grads_F += pos_grads_F
+        self.neg_sae_grads_F += neg_grads_F
+        self.pos_effects_F += pos_effects_F
+        self.neg_effects_F += neg_effects_F
+        self.pos_error_effect += pos_error_effect
+        self.neg_error_effect += neg_error_effect
+        self.pos_yes_probs += pos_yes_probs
+        self.pos_no_probs += pos_no_probs
+        self.neg_yes_probs += neg_yes_probs
+        self.neg_no_probs += neg_no_probs
+        self.pos_count += int(pos_mask_B.sum())
+        self.neg_count += int(neg_mask_B.sum())
+
+        for label_i, tok in zip(labels_B.tolist(), predicted_tokens):
+            if label_i == 1:
+                self.pos_predicted_tokens.append(tok)
+            else:
+                self.neg_predicted_tokens.append(tok)
 
 
 def make_yes_no_loss_fn(
@@ -39,15 +206,14 @@ def make_yes_no_loss_fn(
 
         # difference per example
         diff_B = yes_sum - no_sum  # shape [batch_size]
-        adjusted_diff_B = diff_B
 
         # Apply the label-dependent logic:
         # For label=0: use diff as is
         # For label=1: flip the sign of diff
-        label_factor_B = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
-        adjusted_diff_B = diff_B * label_factor_B
+        # label_factor_B = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
+        # adjusted_diff_B = diff_B * label_factor_B
 
-        return adjusted_diff_B.mean()
+        return diff_B.mean()
 
     return yes_no_loss_fn
 
@@ -65,8 +231,8 @@ def make_max_logprob_loss_fn() -> Callable[[torch.Tensor, torch.Tensor], torch.T
         # Apply the label-dependent logic:
         # For label=0: use diff as is
         # For label=1: flip the sign of diff
-        label_factor = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
-        max_log_probs_B = max_log_probs_B * label_factor
+        # label_factor = 1 - 2 * labels_B.float()  # Convert 0->1, 1->-1
+        # max_log_probs_B = max_log_probs_B * label_factor
 
         return -max_log_probs_B.mean()  # negate so lower = better
 
@@ -100,11 +266,11 @@ def entropy_loss_fn(
     entropy_B = -(probs_BV * log_probs_BV).sum(dim=-1)
 
     # label‑dependent sign flip: 0 ↦ +1, 1 ↦ −1
-    label_factor = 1.0 - 2.0 * labels_B.float().to(entropy_B.device)
-    signed_entropy_B = entropy_B * label_factor
+    # label_factor = 1.0 - 2.0 * labels_B.float().to(entropy_B.device)
+    # signed_entropy_B = entropy_B * label_factor
 
     # negate so "lower loss" means "better" under this convention
-    return -signed_entropy_B.mean()
+    return -entropy_B.mean()
 
 
 def activation_loss_fn(
@@ -119,11 +285,11 @@ def activation_loss_fn(
     energy_B = 0.5 * (h**2).sum(dim=(-1, -2))  # sum over D and L_sel  → [B]
 
     # 3. label‑dependent sign flip  (0 -> +1, 1 -> –1)
-    label_factor = 1.0 - 2.0 * labels_B.float().to(energy_B.device)
-    signed_energy_B = energy_B * label_factor
+    # label_factor = 1.0 - 2.0 * labels_B.float().to(energy_B.device)
+    # signed_energy_B = energy_B * label_factor
 
     # 4. final loss: negate so "lower = better"
-    return -signed_energy_B.mean()
+    return -energy_B.mean()
 
 
 def apply_logit_lens(
@@ -218,7 +384,7 @@ def compute_attributions(
     tokenizer: AutoTokenizer,
     sae: base_sae.BaseSAE,
     model_inputs: dict[str, torch.Tensor],
-    labels: torch.Tensor,
+    labels_B: torch.Tensor,
     chosen_layers: list[int],
     submodules: list[torch.nn.Module],
     loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
@@ -339,37 +505,41 @@ def compute_attributions(
                 "Refactor of loss functions required to support right padding"
             )
             seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-            answer_logits_B = output_logits_BLV[
+            answer_logits_BV = output_logits_BLV[
                 torch.arange(output_logits_BLV.shape[0]),
                 seq_lengths_B,
                 :,
             ]
         elif padding_side == "left":
-            answer_logits_B = output_logits_BLV[
+            answer_logits_BV = output_logits_BLV[
                 :,
                 -1,
                 :,
             ]
 
         if use_activation_loss_fn:
-            # loss = activation_loss_fn(activations[act_submodule], labels)
+            # loss = activation_loss_fn(activations[act_submodule], labels_B)
             logits_BLV = apply_logit_lens(
                 activations[act_submodule], transformers_model
             )
             yes_vs_no_loss_fn = make_yes_no_loss_fn(tokenizer, device=sae.W_dec.device)
             # yes_vs_no_loss_fn = make_max_logprob_loss_fn()
-            loss = yes_vs_no_loss_fn(logits_BLV, labels)
-            # loss = entropy_loss_fn(logits_BLV, labels)
+            loss = yes_vs_no_loss_fn(logits_BLV, labels_B)
+            # loss = entropy_loss_fn(logits_BLV, labels_B)
         else:
-            loss = loss_fn(output_logits_BLV, labels)
+            loss = loss_fn(output_logits_BLV, labels_B)
         loss.backward()
 
-        predicted_tokens = tokenizer.batch_decode(answer_logits_B.argmax(dim=-1))
+        predicted_tokens = tokenizer.batch_decode(answer_logits_BV.argmax(dim=-1))
+
+        yes_probs_B, no_probs_B = model_utils.get_yes_no_probs(
+            tokenizer, answer_logits_BV
+        )
 
         if verbose:
             model_name = transformers_model.__class__.__name__
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            view_outputs(tokenizer, model_inputs["input_ids"], answer_logits_B)
+            view_outputs(tokenizer, model_inputs["input_ids"], answer_logits_BV)
 
     finally:
         # Remove hooks to avoid side effects if function is called repeatedly
@@ -414,6 +584,7 @@ def compute_attributions(
             grad_x_dot_decoder_BLF *= model_inputs["attention_mask"][:, :, None]
             error_effects_BLD *= model_inputs["attention_mask"][:, :, None]
             encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
+            x_BLD *= model_inputs["attention_mask"][:, :, None]
 
             # Store everything
             results[layer_idx] = {
@@ -421,9 +592,12 @@ def compute_attributions(
                 "grad_x_dot_decoder_BLF": grad_x_dot_decoder_BLF.detach(),
                 "encoded_acts_BLF": encoded_acts_BLF.detach(),
                 "error_effects_BLD": error_effects_BLD.detach(),
-                "labels": labels,
+                "acts_BLD": x_BLD.detach(),
+                "labels": labels_B,
                 "model_inputs": model_inputs,
                 "predicted_tokens": predicted_tokens,
+                "yes_log_probs_B": yes_probs_B,
+                "no_log_probs_B": no_probs_B,
             }
 
     return results
@@ -440,9 +614,11 @@ def get_effects(
     device: torch.device,
     use_activation_loss_fn: bool = False,
     verbose: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor, dict[str, list]]:
-    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device)
-    error_effect = 0
+) -> AttributionData:
+    attribution_data = AttributionData(
+        D=sae.W_dec.shape[1], F=sae.W_dec.shape[0], device=device
+    )
+    # TODO: Move to cuda for now, move to cpu at the end
     predicted_tokens = {"labels": [], "predicted_tokens": []}
     for batch in tqdm(dataloader):
         input_ids, attention_mask, labels, idx_batch = batch
@@ -469,33 +645,21 @@ def get_effects(
         # Accumulate results from each batch
         with torch.no_grad():
             for layer in chosen_layers:
-                effects_BLF = batch_results[layer]["effects_BLF"]
-                error_effects_BLD = batch_results[layer]["error_effects_BLD"]
-
-                effects_BLF *= model_inputs["attention_mask"][:, :, None]
-                error_effects_BLD *= model_inputs["attention_mask"][:, :, None]
-
-                effects_F += (
-                    effects_BLF.to(dtype=torch.float32).sum(dim=(1)).mean(dim=0)
-                )
-                error_effect += (
-                    error_effects_BLD.to(dtype=torch.float32).sum(dim=(1, 2)).mean()
-                )
+                attribution_data.update_from_batch(batch_results[layer])
                 predicted_tokens["labels"].extend(labels.tolist())
                 predicted_tokens["predicted_tokens"].extend(
                     batch_results[layer]["predicted_tokens"]
                 )
 
-    effects_F /= len(dataloader)
-    error_effect /= len(dataloader)
-
-    stats = analyze_prediction_rates(
+    _ = analyze_prediction_rates(
         predicted_tokens["labels"],
         predicted_tokens["predicted_tokens"],
         verbose=verbose,
     )
 
-    return effects_F, error_effect, predicted_tokens
+    attribution_data.to("cpu")
+
+    return attribution_data
 
 
 @torch.no_grad()

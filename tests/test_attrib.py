@@ -10,58 +10,58 @@ import torch
 import attribution_experiment
 
 
-def test_forward_pass():
+def test_attrib():
     top_20_indices = torch.tensor(
         [
             2870,
             12553,
-            6500,
-            10565,
             534,
-            13789,
+            6500,
             2908,
-            2328,
+            10565,
             6482,
-            10597,
+            2328,
             12263,
+            14217,
+            10597,
+            2841,
+            697,
             2311,
-            619,
             14392,
             11640,
-            5038,
             11241,
-            697,
-            14217,
+            5038,
             3235,
+            4510,
         ],
         device="cpu",
     )
     top_20_vals = torch.tensor(
         [
-            -1.1457,
-            -0.8101,
-            0.7938,
-            -0.7884,
-            0.7651,
-            0.6948,
-            0.6771,
-            -0.6226,
-            -0.5178,
-            0.4570,
-            0.4533,
-            0.4385,
-            -0.3777,
-            0.3737,
-            0.3724,
-            -0.3704,
-            -0.3497,
-            -0.3200,
-            0.3123,
-            0.3114,
+            -0.0264,
+            -0.0204,
+            0.0184,
+            0.0176,
+            0.0160,
+            -0.0144,
+            -0.0127,
+            -0.0120,
+            0.0118,
+            0.0117,
+            0.0102,
+            -0.0086,
+            -0.0082,
+            0.0078,
+            0.0076,
+            0.0075,
+            -0.0072,
+            -0.0069,
+            0.0067,
+            -0.0065,
         ],
         device="cpu",
     )
-    error_effect = torch.tensor(1.4059, device="cpu")
+    error_effect = torch.tensor(1.5813857316970825e-05, device="cpu")
 
     # 1. Turn off TF32 so matmul precision matches across GPUs
     # torch.backends.cuda.matmul.allow_tf32 = False
@@ -102,8 +102,9 @@ def test_forward_pass():
 
     test_data = all_test_data[bias_category]
 
-    effects_F = test_data["effects_F"]
-    error_effect = test_data["error_effect"]
+    effects_F = test_data["pos_effects_F"] - test_data["neg_effects_F"]
+    error_effect = test_data["pos_error_effect"] - test_data["neg_error_effect"]
+    error_effect = torch.tensor(error_effect, device="cpu")
 
     top_k_ids = effects_F.abs().topk(20).indices
     top_k_vals = effects_F[top_k_ids]

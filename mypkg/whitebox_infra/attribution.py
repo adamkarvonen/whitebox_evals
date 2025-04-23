@@ -577,8 +577,8 @@ def compute_attributions(
                     encoded_acts_BLF[bos_mask] = 0.0
                     residual_BLD[bos_mask] = 0.0
 
-            node_effects_BLF = encoded_acts_BLF * grad_x_dot_decoder_BLF * -1
-            error_effects_BLD = residual_BLD * x_grad_BLD * -1
+            node_effects_BLF = encoded_acts_BLF * grad_x_dot_decoder_BLF
+            error_effects_BLD = residual_BLD * x_grad_BLD
 
             node_effects_BLF *= model_inputs["attention_mask"][:, :, None]
             grad_x_dot_decoder_BLF *= model_inputs["attention_mask"][:, :, None]

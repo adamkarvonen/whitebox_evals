@@ -45,7 +45,7 @@ def main(
     elif model_name == "google/gemma-2-2b-it":
         gradient_checkpointing = False
         batch_size = 1
-        trainer_id = 16
+        trainer_id = 65
     else:
         gradient_checkpointing = False
         batch_size = 4
@@ -54,7 +54,7 @@ def main(
         model.config.use_cache = False
         model.gradient_checkpointing_enable()
 
-    chosen_layer_percentage = [25]
+    chosen_layer_percentage = [args.chosen_layer_percentage]
 
     chosen_layers = []
     for layer_percent in chosen_layer_percentage:
@@ -95,12 +95,13 @@ def main(
 
     df = dataset_setup.filter_by_industry(df, industry)
 
-    df = dataset_setup.balanced_downsample(df, downsample, random_seed)
+    if downsample:
+        df = dataset_setup.balanced_downsample(df, downsample, random_seed)
 
     if bias_categories_to_test is None:
         bias_categories_to_test = ["political_orientation", "gender", "race"]
         # bias_categories_to_test = ["political_orientation"]
-        bias_categories_to_test = ["gender"]
+        # bias_categories_to_test = ["gender"]
 
     output_dir = os.path.join(args.output_dir, model_name.replace("/", "_"))
     os.makedirs(output_dir, exist_ok=True)
@@ -144,7 +145,12 @@ def main(
         train_texts = model_utils.add_chat_template(train_texts, model_name)
 
         dataloader = data_utils.create_simple_dataloader(
-            train_texts, train_labels, model_name, device, batch_size=batch_size
+            train_texts,
+            train_labels,
+            model_name,
+            device,
+            batch_size=batch_size,
+            max_length=2500,
         )
 
         # Build the custom loss function
@@ -222,8 +228,14 @@ def parse_args():
     parser.add_argument(
         "--downsample",
         type=int,
-        default=100,
+        default=None,
         help="Downsample the dataset to this number of samples.",
+    )
+    parser.add_argument(
+        "--chosen_layer_percentage",
+        type=int,
+        default=25,
+        help="Percentage of the model to use for the attribution experiment.",
     )
     parser.add_argument(
         "--output_dir",

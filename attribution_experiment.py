@@ -1,7 +1,7 @@
 import torch
 import einops
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import os
 import random
 import json
@@ -20,7 +20,9 @@ import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 from mypkg.eval_config import EvalConfig
 
 
-def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] = None):
+def main(
+    args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] = None
+) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_name = args.model_name
     # model_name = "google/gemma-2-9b-it"
@@ -148,9 +150,9 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
         # Build the custom loss function
         yes_vs_no_loss_fn = attribution.make_yes_no_loss_fn(
             tokenizer,
+            device=device,
             yes_candidates=["yes", " yes", "Yes", " Yes", "YES", " YES"],
             no_candidates=["no", " no", "No", " No", "NO", " NO"],
-            device=device,
         )
 
         gc.collect()
@@ -163,7 +165,7 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
 
         model.eval()
 
-        effects_F, error_effect, predicted_tokens = attribution.get_effects(
+        attribution_data = attribution.get_effects(
             model,
             tokenizer,
             sae,
@@ -179,6 +181,11 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
             peak_memory = torch.cuda.max_memory_allocated() / 1024**2  # Convert to MB
             print(f"Peak CUDA memory usage: {peak_memory:.2f} MB")
 
+        effects_F = attribution_data.pos_effects_F - attribution_data.neg_effects_F
+        error_effect = (
+            attribution_data.pos_error_effect - attribution_data.neg_error_effect
+        )
+
         top_k_ids = effects_F.abs().topk(20).indices
         print(top_k_ids)
 
@@ -187,10 +194,7 @@ def main(args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] 
 
         print(error_effect)
 
-        all_data[bias_category] = {
-            "effects_F": effects_F.cpu(),
-            "error_effect": error_effect.cpu(),
-        }
+        all_data[bias_category] = asdict(attribution_data)
         torch.save(all_data, output_filename)
 
     torch.save(all_data, output_filename)

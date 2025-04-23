@@ -96,6 +96,35 @@ class AttributionData:
         self.device = device
         return self
 
+    @classmethod
+    def from_dict(
+        cls,
+        src: dict[str, Any],
+        *,
+        device: str | torch.device | None = None,
+    ) -> "AttributionData":
+        """
+        Rebuild an AttributionData from a dict produced by `asdict()`.
+        If `device` is given it overrides the value stored in the dict.
+        """
+        D = src["D"]
+        F = src["F"]
+        dev = device if device is not None else src.get("device", "cpu")
+
+        obj = cls(D=D, F=F, device=dev)  # runs __post_init__
+
+        for f in fields(obj):
+            name = f.name
+            if name in {"D", "F", "device"}:  # already set
+                continue
+            if name not in src:  # missing → keep default
+                continue
+            val = src[name]
+            if torch.is_tensor(val):
+                val = val.to(dev)
+            obj.__setattr__(name, val)
+        return obj
+
     @torch.no_grad()
     def update_from_batch(
         self,

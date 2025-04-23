@@ -33,7 +33,7 @@ def main(
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    trainer_id = 1
+    trainer_id = 2
 
     if model_name == "google/gemma-2-27b-it":
         gradient_checkpointing = True
@@ -46,6 +46,10 @@ def main(
         gradient_checkpointing = False
         batch_size = 1
         trainer_id = 65
+    elif model_name == "google/gemma-2-9b-it":
+        gradient_checkpointing = False
+        batch_size = 2
+        trainer_id = 131
     else:
         gradient_checkpointing = False
         batch_size = 4

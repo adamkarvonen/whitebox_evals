@@ -21,7 +21,9 @@ from mypkg.eval_config import EvalConfig
 
 
 def main(
-    args: argparse.Namespace, bias_categories_to_test: Optional[list[str]] = None
+    args: argparse.Namespace,
+    bias_categories_to_test: Optional[list[str]] = None,
+    override_trainer_id: Optional[int] = None,
 ) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_name = args.model_name
@@ -53,6 +55,9 @@ def main(
     else:
         gradient_checkpointing = False
         batch_size = 4
+
+    if override_trainer_id is not None:
+        trainer_id = override_trainer_id
 
     if gradient_checkpointing:
         model.config.use_cache = False

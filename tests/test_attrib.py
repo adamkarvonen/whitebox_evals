@@ -94,10 +94,11 @@ def test_attrib():
         anti_bias_statement_file="v1.txt",
         downsample=5,
         output_dir="test_attribution_results",
+        chosen_layer_percentage=25,
     )
 
     all_test_data = attribution_experiment.main(
-        args, bias_categories_to_test=[bias_category]
+        args, bias_categories_to_test=[bias_category], override_trainer_id=16
     )
 
     test_data = all_test_data[bias_category]

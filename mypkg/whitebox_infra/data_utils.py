@@ -7,6 +7,8 @@ import einops
 from datasets import load_dataset
 from typing import Optional
 
+from mypkg.pipeline.infra.hiring_bias_prompts import ResumePromptResult
+
 
 def dataset_to_df(dataset_name: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if dataset_name == "bias_in_bios":
@@ -80,6 +82,7 @@ def filter_and_balance_professions(
 def create_simple_dataloader(
     texts: list[str],
     labels: list[int],
+    prompts: list[ResumePromptResult],
     model_name: str,
     device: torch.device,
     batch_size: int = 8,
@@ -132,6 +135,7 @@ def create_simple_dataloader(
             encoded["attention_mask"],
             labels,
             list(range(len(texts))),
+            prompts,
             strict=True,
         )
     )
@@ -162,7 +166,8 @@ def create_simple_dataloader(
         padded_attention_masks = []
         labels_batch = []
         idx_batch = []
-        for input_ids, attention_mask, label, idx in batch:
+        resume_prompt_results_batch = []
+        for input_ids, attention_mask, label, idx, resume_prompt_results in batch:
             pad_length = max_len - len(input_ids)
             if padding_side == "right":
                 padded_input_ids.append(
@@ -178,17 +183,22 @@ def create_simple_dataloader(
                 raise ValueError(f"Invalid padding side: {padding_side}")
             labels_batch.append(label)
             idx_batch.append(idx)
+            resume_prompt_results_batch.append(resume_prompt_results)
         return (
             torch.tensor(padded_input_ids, device=device),
             torch.tensor(padded_attention_masks, device=device),
             torch.tensor(labels_batch, dtype=torch.long, device=device),
             torch.tensor(idx_batch, dtype=torch.long, device=device),
+            resume_prompt_results_batch,
         )
 
     # Create the DataLoader using our custom collate function.
     # We set shuffle=False because our data is already sorted by length.
     dataloader = DataLoader(
-        data, batch_size=batch_size, shuffle=shuffle, collate_fn=custom_collate_fn
+        data,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=custom_collate_fn,
     )
 
     return dataloader

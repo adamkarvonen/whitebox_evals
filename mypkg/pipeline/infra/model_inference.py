@@ -204,6 +204,7 @@ def run_inference_transformers(
     dataloader = data_utils.create_simple_dataloader(
         formatted_prompts,
         [0] * len(formatted_prompts),
+        prompt_dicts,
         model_name,
         device,
         batch_size=batch_size,
@@ -220,25 +221,35 @@ def run_inference_transformers(
             encoder_vectors, decoder_vectors, scales, encoder_biases
         )
         submodule = model_utils.get_submodule(model, sae.hook_layer)
-        submodule.register_forward_hook(ablation_hook)
+        handle = submodule.register_forward_hook(ablation_hook)
 
-    for batch in tqdm(dataloader, desc="Processing prompts"):
-        input_ids, attention_mask, labels, idx_batch = batch
-        model_inputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
+    try:
+        for batch in tqdm(dataloader, desc="Processing prompts"):
+            (
+                input_ids,
+                attention_mask,
+                labels,
+                idx_batch,
+                resume_prompt_results_batch,
+            ) = batch
+            model_inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            }
 
-        response = model.generate(
-            **model_inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-        )
-        response = response[:, input_ids.shape[1] :]
-        response = tokenizer.batch_decode(response, skip_special_tokens=True)
+            response = model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+            )
+            response = response[:, input_ids.shape[1] :]
+            response = tokenizer.batch_decode(response, skip_special_tokens=True)
 
-        for i, idx in enumerate(idx_batch):
-            prompt_dicts[idx].response = response[i]
+            for i, idx in enumerate(idx_batch):
+                prompt_dicts[idx].response = response[i]
+    finally:
+        if ablation_features is not None:
+            handle.remove()
 
     return prompt_dicts
 
@@ -252,6 +263,7 @@ def run_single_forward_pass_transformers(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
+    ablation_type: str = "clamping",
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     assert padding_side in ["left", "right"]
 
@@ -272,6 +284,7 @@ def run_single_forward_pass_transformers(
     dataloader = data_utils.create_simple_dataloader(
         formatted_prompts,
         [0] * len(formatted_prompts),
+        prompt_dicts,
         model_name,
         device,
         batch_size=batch_size,
@@ -279,48 +292,79 @@ def run_single_forward_pass_transformers(
     )
 
     if ablation_features is not None:
-        sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
+        sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=65)
         encoder_vectors, decoder_vectors, encoder_biases = get_sae_vectors(
             ablation_features, sae
         )
-        scales = [0.0] * len(encoder_vectors)
-        ablation_hook = get_conditional_clamping_hook(
-            encoder_vectors, decoder_vectors, scales, encoder_biases
-        )
-        submodule = model_utils.get_submodule(model, sae.hook_layer)
-        submodule.register_forward_hook(ablation_hook)
 
     for batch in tqdm(dataloader, desc="Processing prompts"):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
         model_inputs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
         }
 
-        logits = model(**model_inputs).logits
-        if padding_side == "right":
-            seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-            answer_logits_BV = logits[
-                torch.arange(logits.shape[0]),
-                seq_lengths_B,
-                :,
-            ]
-        elif padding_side == "left":
-            answer_logits_BV = logits[
-                :,
-                -1,
-                :,
-            ]
-        answer_logits_B = torch.argmax(answer_logits_BV, dim=-1)
-        predicted_tokens = tokenizer.batch_decode(answer_logits_B.unsqueeze(-1))
-        yes_probs_B, no_probs_B = model_utils.get_yes_no_probs(
-            tokenizer, answer_logits_BV
-        )
+        if ablation_features is not None:
+            if ablation_type == "clamping":
+                scales = [0.0] * len(encoder_vectors)
+                ablation_hook = get_conditional_clamping_hook(
+                    encoder_vectors, decoder_vectors, scales, encoder_biases
+                )
+            elif ablation_type == "steering":
+                scales = [5.0] * len(encoder_vectors)
+                ablation_hook = get_conditional_steering_hook(
+                    encoder_vectors, decoder_vectors, scales, encoder_biases
+                )
+            elif ablation_type == "constant":
+                scales = [0.0] * len(encoder_vectors)
+                ablation_hook = get_constant_steering_hook(
+                    encoder_vectors, decoder_vectors, scales, encoder_biases
+                )
+            elif ablation_type == "targeted":
+                scales = [20.0] * len(encoder_vectors)
+                ablation_hook = get_targeted_steering_hook(
+                    encoder_vectors,
+                    decoder_vectors,
+                    scales,
+                    encoder_biases,
+                    resume_prompt_results_batch,
+                    input_ids,
+                    tokenizer,
+                )
 
-        for i, idx in enumerate(idx_batch):
-            prompt_dicts[idx].response = predicted_tokens[i]
-            prompt_dicts[idx].yes_probs = yes_probs_B[i].item()
-            prompt_dicts[idx].no_probs = no_probs_B[i].item()
+            submodule = model_utils.get_submodule(model, sae.hook_layer)
+            handle = submodule.register_forward_hook(ablation_hook)
+
+        try:
+            logits = model(**model_inputs).logits
+            if padding_side == "right":
+                seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
+                answer_logits_BV = logits[
+                    torch.arange(logits.shape[0]),
+                    seq_lengths_B,
+                    :,
+                ]
+            elif padding_side == "left":
+                answer_logits_BV = logits[
+                    :,
+                    -1,
+                    :,
+                ]
+            answer_logits_B = torch.argmax(answer_logits_BV, dim=-1)
+            predicted_tokens = tokenizer.batch_decode(answer_logits_B.unsqueeze(-1))
+            yes_probs_B, no_probs_B = model_utils.get_yes_no_probs(
+                tokenizer, answer_logits_BV
+            )
+
+            for i, idx in enumerate(idx_batch):
+                prompt_dicts[idx].response = predicted_tokens[i]
+                prompt_dicts[idx].yes_probs = yes_probs_B[i].item()
+                prompt_dicts[idx].no_probs = no_probs_B[i].item()
+        finally:
+            if ablation_features is not None:
+                handle.remove()
 
     return prompt_dicts
 
@@ -362,6 +406,8 @@ def get_sae_vectors(
     decoder_vectors = []
     encoder_biases = []
 
+    device = sae.W_dec.device
+
     for i in range(ablation_features.shape[0]):
         feature_idx = ablation_features[i]
         encoder_vector = sae.W_enc[:, feature_idx]
@@ -373,6 +419,10 @@ def get_sae_vectors(
             encoder_bias += sae.threshold
         elif hasattr(sae, "threshold"):
             encoder_bias += sae.threshold[feature_idx]
+
+        encoder_vector = encoder_vector.to(device)
+        decoder_vector = decoder_vector.to(device)
+        encoder_bias = encoder_bias.to(device)
 
         encoder_vectors.append(encoder_vector)
         decoder_vectors.append(decoder_vector)
@@ -414,9 +464,6 @@ def get_conditional_clamping_hook(
         for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
             encoder_vectors, decoder_vectors, scales, encoder_thresholds
         ):
-            encoder_vector_D = encoder_vector_D.to(resid_BLD.device)
-            decoder_vector_D = decoder_vector_D.to(resid_BLD.device)
-
             # Get encoder activations
             feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
 
@@ -434,6 +481,124 @@ def get_conditional_clamping_hook(
                 resid_BLD + decoder_BLD,
                 resid_BLD,
             )
+
+        return (resid_BLD,) + output[1:]
+
+    return hook_fn
+
+
+def get_conditional_steering_hook(
+    encoder_vectors: list[Float[Tensor, "d_model"]],
+    decoder_vectors: list[Float[Tensor, "d_model"]],
+    scales: list[float],
+    encoder_thresholds: list[float],
+) -> Callable:
+    def hook_fn(module, input, output):
+        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
+
+        B, L, D = resid_BLD.shape
+
+        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
+            encoder_vectors, decoder_vectors, scales, encoder_thresholds
+        ):
+            # Get encoder activations
+            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
+
+            # Create mask for where encoder activation exceeds threshold
+            intervention_mask_BL = feature_acts_BL > encoder_threshold
+
+            # Calculate clamping amount only where mask is True
+            decoder_BLD = (
+                feature_acts_BL[:, :, None] * coeff * decoder_vector_D[None, None, :]
+            )
+
+            # Apply clamping only where both mask is True and activation is positive
+            resid_BLD = torch.where(
+                (intervention_mask_BL[:, :, None] & (feature_acts_BL[:, :, None] > 0)),
+                resid_BLD + decoder_BLD,
+                resid_BLD,
+            )
+
+        return (resid_BLD,) + output[1:]
+
+    return hook_fn
+
+
+def get_constant_steering_hook(
+    encoder_vectors: list[Float[Tensor, "d_model"]],
+    decoder_vectors: list[Float[Tensor, "d_model"]],
+    scales: list[float],
+    encoder_thresholds: list[float],
+) -> Callable:
+    def hook_fn(module, input, output):
+        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
+
+        B, L, D = resid_BLD.shape
+
+        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
+            encoder_vectors, decoder_vectors, scales, encoder_thresholds
+        ):
+            # Get encoder activations
+            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
+
+            # Create mask for where encoder activation exceeds threshold
+            intervention_mask_BL = feature_acts_BL > encoder_threshold
+
+            # Calculate clamping amount only where mask is True
+            decoder_BLD = coeff * decoder_vector_D[None, None, :]
+
+            # Apply clamping only where both mask is True and activation is positive
+            resid_BLD = resid_BLD + decoder_BLD
+
+        return (resid_BLD,) + output[1:]
+
+    return hook_fn
+
+
+def get_targeted_steering_hook(
+    encoder_vectors: list[Float[Tensor, "d_model"]],
+    decoder_vectors: list[Float[Tensor, "d_model"]],
+    scales: list[float],
+    encoder_thresholds: list[float],
+    resume_prompt_results: list[hiring_bias_prompts.ResumePromptResult],
+    input_ids: torch.Tensor,
+    tokenizer: AutoTokenizer,
+) -> Callable:
+    resume_mask_BL = torch.zeros_like(input_ids)
+
+    # Note: This is currently pretty slow, could be sped up more by precomputing the encoded suffix and resume
+    for i, resume_prompt in enumerate(resume_prompt_results):
+        resume = resume_prompt.resume
+        prompt_splits = resume_prompt.prompt.split(resume)
+        assert len(prompt_splits) == 2
+        suffix = prompt_splits[-1]
+        encoded_suffix = tokenizer.encode(suffix, add_special_tokens=False)
+        encoded_resume = tokenizer.encode(resume, add_special_tokens=False)
+        resume_end = -len(encoded_suffix)
+        resume_start = resume_end - len(encoded_resume)
+        resume_mask_BL[i, resume_start:resume_end] = 1
+
+    def hook_fn(module, input, output):
+        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
+
+        B, L, D = resid_BLD.shape
+
+        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
+            encoder_vectors, decoder_vectors, scales, encoder_thresholds
+        ):
+            # Get encoder activations
+            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
+
+            # Create mask for where encoder activation exceeds threshold
+            intervention_mask_BL = feature_acts_BL > encoder_threshold
+
+            # Calculate clamping amount only where mask is True
+            decoder_BLD = coeff * decoder_vector_D[None, None, :]
+
+            decoder_BLD = decoder_BLD * resume_mask_BL[:, :, None]
+
+            # Apply clamping only where both mask is True and activation is positive
+            resid_BLD = resid_BLD + decoder_BLD
 
         return (resid_BLD,) + output[1:]
 

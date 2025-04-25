@@ -147,15 +147,14 @@ def main(
             df, args, eval_config
         )
 
-        train_texts, train_labels = (
-            hiring_bias_prompts.process_hiring_bias_resumes_prompts(prompts, args)
+        train_texts, train_labels, train_resume_prompt_results = (
+            hiring_bias_prompts.process_hiring_bias_resumes_prompts(prompts, model_name, args)
         )
-
-        train_texts = model_utils.add_chat_template(train_texts, model_name)
 
         dataloader = data_utils.create_simple_dataloader(
             train_texts,
             train_labels,
+            train_resume_prompt_results,
             model_name,
             device,
             batch_size=batch_size,

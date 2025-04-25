@@ -650,7 +650,7 @@ def get_effects(
     # TODO: Move to cuda for now, move to cpu at the end
     predicted_tokens = {"labels": [], "predicted_tokens": []}
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch = batch
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = batch
 
         model_inputs = {
             "input_ids": input_ids,

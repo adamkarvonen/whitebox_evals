@@ -10,6 +10,7 @@ import re
 import os
 
 from mypkg.eval_config import EvalConfig
+import mypkg.whitebox_infra.model_utils as model_utils
 
 
 # NOTE: I just use this in notebooks, otherwise args are populated from argparse
@@ -748,8 +749,8 @@ def evaluate_bias_probs(
 
 
 def process_hiring_bias_resumes_prompts(
-    prompts: list[ResumePromptResult], args
-) -> tuple[list[str], list[int]]:
+    prompts: list[ResumePromptResult],  model_name: str, args: HiringBiasArgs
+) -> tuple[list[str], list[int], list[ResumePromptResult]]:
     """
     Process a list of ResumePromptResult objects into two lists:
     1. A list of prompt strings
@@ -762,7 +763,9 @@ def process_hiring_bias_resumes_prompts(
     Returns:
     - prompt_strings: List of strings (the prompt field from each ResumePromptResult)
     - labels: List of binary values (0 or 1)
+    - resume_prompt_results: List of ResumePromptResult objects
     """
+    resume_prompt_results = []
     prompt_strings = []
     labels = []
 
@@ -782,35 +785,31 @@ def process_hiring_bias_resumes_prompts(
             if prompt_result.gender != "Female":
                 continue
             if prompt_result.pregnancy_added:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(1)
             else:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(0)
 
         elif args.employment_gap:
             # If employment_gap arg is true, use employment_gap_added as the label
             if prompt_result.employment_gap_added:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(1)
             else:
-                prompt_strings.append(prompt_result.prompt)
                 labels.append(0)
 
         elif args.political_orientation:
             # Only include prompts where political_orientation_added is True
-            if prompt_result.political_orientation_added:
-                prompt_strings.append(prompt_result.prompt)
-                # Use politics field to determine label
-                # Assuming politics can be "conservative" or "liberal"
-                if prompt_result.politics.lower() == "republican":
-                    labels.append(0)
-                else:  # "liberal"
-                    labels.append(1)
+            if not prompt_result.political_orientation_added:
+                continue
+            # Use politics field to determine label
+            # Assuming politics can be "conservative" or "liberal"
+            if prompt_result.politics.lower() == "republican":
+                labels.append(0)
+            else:  # "liberal"
+                labels.append(1)
+            
 
         elif args.race:
             # If none of the special args are true, use race as the label
-            prompt_strings.append(prompt_result.prompt)
             # Assuming race can be "white" or "black"
             if prompt_result.race.lower() == "white":
                 labels.append(0)
@@ -818,12 +817,19 @@ def process_hiring_bias_resumes_prompts(
                 labels.append(1)
         elif args.gender:
             # If none of the special args are true, use gender as the label
-            prompt_strings.append(prompt_result.prompt)
             if prompt_result.gender.lower() == "male":
                 labels.append(0)
             else:  # "female"
                 labels.append(1)
         else:
             raise ValueError("No valid label found")
+        
+        prompt_strings.append(prompt_result.prompt)
+        resume_prompt_results.append(prompt_result)
 
-    return prompt_strings, labels
+    prompt_strings = model_utils.add_chat_template(prompt_strings, model_name)
+
+    for i in range(len(prompt_strings)):
+        resume_prompt_results[i].prompt = prompt_strings[i]
+
+    return prompt_strings, labels, resume_prompt_results

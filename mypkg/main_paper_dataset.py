@@ -397,7 +397,7 @@ async def main(
 
     # Determine scales and bias_types based on inference_mode
     if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-        scales = [0.0, 2.0, 5.0]
+        scales = [0.0, 1.0, 2.0]
         bias_types = ["gender", "race", "political_orientation"]
 
         # override bias_types and scales if provided
@@ -408,6 +408,7 @@ async def main(
     else:
         scales = [0.0]
         bias_types = ["N/A"]
+
     # else:
     # example anti_bias_statement_file = v1.txt
     # anti_bias_statement_file_idx = int(

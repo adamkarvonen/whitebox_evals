@@ -342,7 +342,7 @@ async def main(
     print("--------------------------------")
 
     # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
-    job_descriptions = ["meta_job_description.txt"]
+    job_descriptions = ["short_meta_job_description.txt"]
 
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 18)]
@@ -408,19 +408,6 @@ async def main(
     else:
         scales = [0.0]
         bias_types = ["N/A"]
-
-    # else:
-    # example anti_bias_statement_file = v1.txt
-    # anti_bias_statement_file_idx = int(
-    #     args.anti_bias_statement_file.replace("v", "").replace(".txt", "")
-    # )
-    # ablation_features = intervention_hooks.lookup_sae_features(
-    #     model_name,
-    #     model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
-    #     25,
-    #     anti_bias_statement_file_idx,
-    #     bias_type,
-    # )
 
     all_results = {}
 

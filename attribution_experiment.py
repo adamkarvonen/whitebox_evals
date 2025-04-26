@@ -86,7 +86,7 @@ def main(
         employment_gap=False,
         anthropic_dataset=False,
         downsample=args.downsample,
-        gpu_inference=True,
+        inference_mode="gpu_forward_pass",
         anti_bias_statement_file=args.anti_bias_statement_file,
         job_description_file="short_meta_job_description.txt",
         system_prompt_filename="yes_no.txt",
@@ -148,7 +148,9 @@ def main(
         )
 
         train_texts, train_labels, train_resume_prompt_results = (
-            hiring_bias_prompts.process_hiring_bias_resumes_prompts(prompts, model_name, args)
+            hiring_bias_prompts.process_hiring_bias_resumes_prompts(
+                prompts, model_name, args
+            )
         )
 
         dataloader = data_utils.create_simple_dataloader(

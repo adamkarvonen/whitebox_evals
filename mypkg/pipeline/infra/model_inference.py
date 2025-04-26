@@ -302,7 +302,10 @@ def run_single_forward_pass_transformers(
         encoder_vectors, decoder_vectors, encoder_biases = (
             intervention_hooks.get_sae_vectors(ablation_features, sae)
         )
-
+        sae = sae.to("cpu")
+        hook_layer = sae.hook_layer
+        del sae
+        torch.cuda.empty_cache()
     for batch in tqdm(dataloader, desc="Processing prompts"):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
             batch
@@ -342,7 +345,7 @@ def run_single_forward_pass_transformers(
                     tokenizer,
                 )
 
-            submodule = model_utils.get_submodule(model, sae.hook_layer)
+            submodule = model_utils.get_submodule(model, hook_layer)
             handle = submodule.register_forward_hook(ablation_hook)
 
         try:

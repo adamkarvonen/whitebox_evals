@@ -249,6 +249,18 @@ def parse_args():
         help="The model name to use. If not provided, we will use all model_names in the model_names list.",
     )
     parser.add_argument(
+        "--bias_type",
+        type=str,
+        default=None,
+        help="The bias type to use. If not provided, we will use all bias_types in the bias_types list.",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=None,
+        help="The scale to use. If not provided, we will use all scales in the scales list.",
+    )
+    parser.add_argument(
         "--overwrite_existing_results",
         action="store_true",
         help="Whether to overwrite existing results",
@@ -383,8 +395,14 @@ async def main(
 
     # Determine scales and bias_types based on inference_mode
     if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-        scales = [0.0, 2.0]
+        scales = [0.0, 2.0, 5.0]
         bias_types = ["gender", "race", "political_orientation"]
+
+        # override bias_types and scales if provided
+        if args.bias_type is not None:
+            bias_types = [args.bias_type]
+        if args.scale is not None:
+            scales = [args.scale]
     else:
         scales = [0.0]
         bias_types = ["N/A"]
@@ -457,22 +475,26 @@ async def main(
             )
         elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-            # The 'model_features' variable here is still undefined in this file.
-            # This needs to be resolved for the ablation mode to work correctly.
-            # Placeholder for where ablation features would be calculated/retrieved:
-            # anti_bias_statement_file_idx = int(anti_bias_statement_file.strip("v.txt"))
-            # ablation_features = intervention_hooks.lookup_sae_features(...) # Needs correct args
-            ablation_features = None  # Temporarily set to None
-            print(
-                f"Warning: Ablation features lookup needs implementation for model: {model_name}"
+
+            ablation_features = intervention_hooks.lookup_sae_features(
+                model_name,
+                model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
+                25,
+                anti_bias_statement_file,
+                bias_type,
             )
+
+            print(ablation_features)
+
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
                 batch_size=batch_size,
-                # ablation_features=torch.tensor(model_features[model_name]), # Original line with undefined model_features
                 ablation_features=ablation_features,
+                ablation_type="adaptive_clamping",
+                scale=scale,
             )
+
         elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
@@ -548,6 +570,7 @@ if __name__ == "__main__":
     # Setup moved here
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
     log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
     original_stdout = sys.stdout  # Keep track of the original stdout
     sys.stdout = Logger(log_file)

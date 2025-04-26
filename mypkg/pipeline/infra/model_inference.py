@@ -276,7 +276,7 @@ def run_single_forward_pass_transformers(
             model_name,
             torch_dtype=dtype,
             device_map="auto",
-            # attn_implementation="flash_attention_2",  # FlashAttention2 doesn't support right padding with mistral
+            # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
         )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -294,7 +294,10 @@ def run_single_forward_pass_transformers(
     )
 
     if ablation_features is not None:
-        sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=65)
+        trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
+        sae = model_utils.load_model_sae(
+            model_name, device, dtype, 25, trainer_id=trainer_id
+        )
         scales = [scale] * len(ablation_features)
         encoder_vectors, decoder_vectors, encoder_biases = (
             intervention_hooks.get_sae_vectors(ablation_features, sae)

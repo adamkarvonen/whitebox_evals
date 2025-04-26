@@ -650,7 +650,9 @@ def get_effects(
     # TODO: Move to cuda for now, move to cpu at the end
     predicted_tokens = {"labels": [], "predicted_tokens": []}
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = batch
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
 
         model_inputs = {
             "input_ids": input_ids,
@@ -772,3 +774,33 @@ def get_activations(
     effects_F /= len(dataloader)
 
     return effects_F
+
+
+def adjust_tensor_values(
+    input_tensor: torch.Tensor, fallback_value: float = 100.0
+) -> torch.Tensor:
+    """
+    Adjusts tensor values according to the following rules:
+    - If x >= 1, keep x.
+    - If 0 < x < 1, replace x with 1/x.
+    - If x <= 0, replace x with fallback_value.
+    """
+    # Calculate reciprocal, handle potential division by zero/negative results temporarily
+    reciprocal = torch.reciprocal(input_tensor)
+
+    # Apply conditions using torch.where
+    # Condition 1: x >= 1 -> keep original value
+    # Condition 2: 0 < x < 1 -> use reciprocal
+    # Condition 3: x <= 0 -> use fallback_value
+
+    # First, distinguish between >= 1 and < 1
+    adjusted = torch.where(input_tensor >= 1, input_tensor, reciprocal)
+
+    # Then, handle the case where input_tensor <= 0, replacing potentially inf/negative reciprocals
+    final_adjusted = torch.where(
+        input_tensor <= 0,
+        torch.tensor(fallback_value, dtype=input_tensor.dtype),
+        adjusted,
+    )
+
+    return final_adjusted

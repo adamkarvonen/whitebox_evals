@@ -7,6 +7,47 @@ from transformers import AutoTokenizer
 
 import mypkg.whitebox_infra.dictionaries.base_sae as base_sae
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
+import mypkg.whitebox_infra.attribution as attribution
+
+
+def lookup_sae_features(
+    model_name: str,
+    trainer_id: int,
+    layer_percent: int,
+    anti_bias_statement_file: str,
+    bias_type: str,
+) -> torch.Tensor:
+    assert bias_type in ["race", "gender", "political_orientation"]
+
+    anti_bias_statement_file_idx = int(
+        anti_bias_statement_file.replace("v", "").replace(".txt", "")
+    )
+
+    model_name = model_name.replace("/", "_")
+
+    filename = f"v{anti_bias_statement_file_idx}_trainer_{trainer_id}_model_{model_name}_layer_{layer_percent}_attrib_data.pt"
+    attrib_path = f"data/attribution_results_data/{model_name}/{filename}"
+
+    data = torch.load(attrib_path)
+
+    attribution_data = attribution.AttributionData.from_dict(data[bias_type])
+
+    effects_F = attribution_data.pos_effects_F - attribution_data.neg_effects_F
+
+    k = 20
+
+    top_k_ids = effects_F.abs().topk(k).indices
+
+    act_ratios_F = attribution_data.pos_sae_acts_F / attribution_data.neg_sae_acts_F
+
+    top_k_act_ratios = act_ratios_F[top_k_ids]
+
+    adjusted_act_ratios = attribution.adjust_tensor_values(top_k_act_ratios)
+    outlier_effect_ids = adjusted_act_ratios > 2.0
+
+    top_k_ids = top_k_ids[outlier_effect_ids]
+
+    return top_k_ids
 
 
 def get_sae_vectors(

@@ -19,7 +19,8 @@ from dataclasses import asdict
 import itertools
 import gc
 import time
-from typing import Optional
+from typing import Optional, Any
+from enum import Enum
 
 from mypkg.eval_config import EvalConfig
 from mypkg.pipeline.setup.dataset import (
@@ -38,6 +39,19 @@ from mypkg.pipeline.infra.hiring_bias_prompts import (
 )
 import mypkg.pipeline.infra.model_inference as model_inference
 import mypkg.whitebox_infra.model_utils as model_utils
+import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
+
+
+# Define the InferenceMode Enum
+class InferenceMode(Enum):
+    GPU_INFERENCE = "gpu_inference"
+    GPU_FORWARD_PASS = "gpu_forward_pass"
+    PERFORM_ABLATIONS = "perform_ablations"
+    OPEN_ROUTER = "open_router"
+
+    def __str__(self):
+        return self.value
+
 
 OPENROUTER_NAME_LOOKUP = {
     "mistralai/Ministral-8B-Instruct-2410": "mistralai/ministral-8b",
@@ -152,25 +166,6 @@ def balanced_downsample(df, n_samples, random_seed=42):
     return balanced_sample
 
 
-model_features = {
-    "mistralai/Ministral-8B-Instruct-2410": [
-        4794,
-        4393,
-        3645,
-        15242,
-        2039,
-        9049,
-        11802,
-        13855,
-        5286,
-        4204,
-        428,
-    ],
-    "google/gemma-2-2b-it": [
-        3513,
-    ],
-}
-
 REASONING_MODELS = [
     "openai/o1-mini",
     "x-ai/grok-3-mini-beta",
@@ -229,24 +224,16 @@ def parse_args():
         help="System prompt filename to use",
     )
     parser.add_argument(
-        "--gpu_inference",
-        action="store_true",
-        help="Whether to use GPU inference",
-    )
-    parser.add_argument(
-        "--gpu_forward_pass",
-        action="store_true",
-        help="Whether to use GPU forward pass",
-    )
-    parser.add_argument(
-        "--perform_ablations",
-        action="store_true",
-        help="Whether to perform ablation experiments",
+        "--inference_mode",
+        type=str,
+        choices=[mode.value for mode in InferenceMode],
+        default=InferenceMode.OPEN_ROUTER.value,
+        help="The inference mode to use.",
     )
     parser.add_argument(
         "--anti_bias_statement_file",
         type=str,
-        required=True,
+        default=None,
         help="Path to a single anti-bias statement file; We only use this statement.",
     )
     parser.add_argument(
@@ -254,6 +241,17 @@ def parse_args():
         type=str,
         default="score_output",
         help="Path to a directory to save the score output.",
+    )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default=None,
+        help="The model name to use. If not provided, we will use all model_names in the model_names list.",
+    )
+    parser.add_argument(
+        "--overwrite_existing_results",
+        action="store_true",
+        help="Whether to overwrite existing results",
     )
 
     args = parser.parse_args()
@@ -265,13 +263,12 @@ async def main(
     args: argparse.Namespace,
     cache_dir: str,
     timestamp: str,
-    model_names: Optional[list[str]] = None,
-) -> dict:
-    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --anti_bias_statement_file v1.txt --gpu_inference
+) -> dict[str, Any]:
+    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --inference_mode gpu_inference
 
-    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt --gpu_forward_pass
+    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
 
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --anti_bias_statement_file v1.txt"""
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
     os.makedirs(cache_dir, exist_ok=True)
 
     start_time = time.time()
@@ -298,19 +295,8 @@ async def main(
         else:
             print("No industry filter applied.")
 
-    # model_name = "gpt-4o-mini"
-    # model_name = "google/gemma-2-9b-it"
-    # model_name = "google/gemma-2-27b-it"
-    # model_name = "qwen/qwen2.5-32b-instruct"
-    # model_name = "deepseek/deepseek-r1"
-    # model_name = "qwen/qwen-2.5-7b-instruct"
-    # model_name = "google/gemini-flash-1.5-8b"
-    # model_name = "meta-llama/llama-3.1-8b-instruct"
-    # model_name = "mistralai/Ministral-8B-Instruct-2410"
-    # model_name = "mistralai/mixtral-8x7b-instruct"
-    # model_name = "mistralai/mistral-small-3.1-24b-instruct"
-
     eval_config = EvalConfig(
+        inference_mode=args.inference_mode,
         model_name="",
         industry=args.industry,
         mode=args.mode,
@@ -319,7 +305,6 @@ async def main(
         employment_gap=args.employment_gap,
         anthropic_dataset=args.anthropic_dataset,
         downsample=args.downsample,
-        gpu_inference=args.gpu_inference,
         system_prompt_filename=args.system_prompt_filename,
         anti_bias_statement_file=args.anti_bias_statement_file,
     )
@@ -344,12 +329,13 @@ async def main(
 
     # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
     job_descriptions = ["meta_job_description.txt"]
-    # job_descriptions = ["long_meta_job_description_v2.txt"]
-    # job_descriptions = ["short_meta_job_description.txt"]
-    # model_names = ["mistralai/Ministral-8B-Instruct-2410"]
-    # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
 
-    if model_names is None:
+    if args.anti_bias_statement_file is None:
+        anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 18)]
+    else:
+        anti_bias_statement_files = [args.anti_bias_statement_file]
+
+    if args.model_name is None:
         model_names = [
             "google/gemma-2-2b-it",
             # "google/gemma-2-9b-it",
@@ -369,10 +355,10 @@ async def main(
             # "qwen/qwen2.5-32b-instruct",
             # "openai/gpt-4o-mini",
         ]
+    else:
+        model_names = [args.model_name]
 
     os.makedirs(args.score_output_dir, exist_ok=True)
-
-    model_names_seen = set()
 
     if (
         eval_config.system_prompt_filename == "yes_no_cot.txt"
@@ -388,28 +374,73 @@ async def main(
 
     max_completion_tokens = None
 
-    for job_description, model_name in itertools.product(job_descriptions, model_names):
-        eval_config.anti_bias_statement_file = args.anti_bias_statement_file
+    if args.inference_mode == InferenceMode.GPU_INFERENCE.value:
+        # We load this here because it often takes ~1 minute to load
+        import vllm
+
+        assert len(model_names) == 1
+        vllm_model = vllm.LLM(model=model_names[0], dtype="bfloat16")
+
+    # Determine scales and bias_types based on inference_mode
+    if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
+        scales = [0.0, 2.0]
+        bias_types = ["gender", "race", "political_orientation"]
+    else:
+        scales = [0.0]
+        bias_types = ["N/A"]
+    # else:
+    # example anti_bias_statement_file = v1.txt
+    # anti_bias_statement_file_idx = int(
+    #     args.anti_bias_statement_file.replace("v", "").replace(".txt", "")
+    # )
+    # ablation_features = intervention_hooks.lookup_sae_features(
+    #     model_name,
+    #     model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
+    #     25,
+    #     anti_bias_statement_file_idx,
+    #     bias_type,
+    # )
+
+    all_results = {}
+
+    for (
+        job_description,
+        model_name,
+        anti_bias_statement_file,
+        scale,
+        bias_type,
+    ) in itertools.product(
+        job_descriptions, model_names, anti_bias_statement_files, scales, bias_types
+    ):
+        eval_config.anti_bias_statement_file = anti_bias_statement_file
         eval_config.job_description_file = job_description
         eval_config.model_name = model_name
-        print(f"Running with anti-bias statement: {args.anti_bias_statement_file}")
+        eval_config.scale = scale
+        eval_config.bias_type = bias_type
+        print(f"Running with anti-bias statement: {anti_bias_statement_file}")
         print(f"Running with job description: {job_description}")
         print(f"Running with model: {model_name}")
+        print(f"Running with scale: {scale}")
+        print(f"Running with bias type: {bias_type}")
 
-        temp_results_filename = (
-            f"score_results_{args.anti_bias_statement_file}.json".replace(
-                ".txt", ""
-            ).replace("/", "_")
+        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.json".replace(
+            ".txt", ""
+        ).replace("/", "_")
+        temp_results_folder = os.path.join(
+            args.inference_mode, model_name.replace("/", "_")
         )
-        output_dir = os.path.join(args.score_output_dir, model_name.replace("/", "_"))
+        output_dir = os.path.join(args.score_output_dir, temp_results_folder)
         os.makedirs(output_dir, exist_ok=True)
+
+        file_key = os.path.join(temp_results_folder, temp_results_filename)
         temp_results_filepath = os.path.join(output_dir, temp_results_filename)
 
-        # This is a hack to overwrite the results from the previous run
-        if model_name not in model_names_seen:
-            model_names_seen.add(model_name)
-            with open(temp_results_filepath, "w") as f:
-                json.dump({}, f)
+        if (
+            os.path.exists(temp_results_filepath)
+            and not args.overwrite_existing_results
+        ):
+            print(f"Skipping {temp_results_filename} because it already exists")
+            continue
 
         if args.anthropic_dataset:
             prompts = create_all_prompts_anthropic(df, args, eval_config)
@@ -419,38 +450,45 @@ async def main(
         gc.collect()
         torch.cuda.empty_cache()
 
-        if args.gpu_forward_pass:
+        if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
             results = model_inference.run_single_forward_pass_transformers(
                 prompts, model_name, batch_size=batch_size
             )
-        elif args.perform_ablations:
+        elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+            # The 'model_features' variable here is still undefined in this file.
+            # This needs to be resolved for the ablation mode to work correctly.
+            # Placeholder for where ablation features would be calculated/retrieved:
+            # anti_bias_statement_file_idx = int(anti_bias_statement_file.strip("v.txt"))
+            # ablation_features = intervention_hooks.lookup_sae_features(...) # Needs correct args
+            ablation_features = None  # Temporarily set to None
+            print(
+                f"Warning: Ablation features lookup needs implementation for model: {model_name}"
+            )
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
                 batch_size=batch_size,
-                ablation_features=torch.tensor(model_features[model_name]),
+                # ablation_features=torch.tensor(model_features[model_name]), # Original line with undefined model_features
+                ablation_features=ablation_features,
             )
-        elif args.gpu_inference:
-            # results = model_inference.run_inference_transformers(
-            #     prompts,
-            #     model_name,
-            #     batch_size=batch_size,
-            #     max_new_tokens=max_completion_tokens,
-            # )
+        elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
                 max_new_tokens=max_completion_tokens,
+                model=vllm_model,
+            )
+        elif args.inference_mode == InferenceMode.OPEN_ROUTER.value:
+            # Use the lookup table if the model name is present
+            api_model_name = OPENROUTER_NAME_LOOKUP.get(model_name, model_name)
+            results = await model_inference.run_model_inference_openrouter(
+                prompts, api_model_name, max_completion_tokens=max_completion_tokens
             )
         else:
-            if model_name in OPENROUTER_NAME_LOOKUP:
-                model_name = OPENROUTER_NAME_LOOKUP[model_name]
-            results = await model_inference.run_model_inference_openrouter(
-                prompts, model_name, max_completion_tokens=max_completion_tokens
-            )
-            gc.collect()
+            # This case should not be reachable due to argparse choices
+            raise ValueError(f"Unhandled inference mode: {args.inference_mode}")
 
         # Quick and dirty check to see if prompts are the same from run to run
         total_len = 0
@@ -463,7 +501,10 @@ async def main(
         )
         print(bias_scores)
 
-        if args.gpu_forward_pass or args.perform_ablations:
+        if args.inference_mode in [
+            InferenceMode.GPU_FORWARD_PASS.value,
+            InferenceMode.PERFORM_ABLATIONS.value,
+        ]:
             bias_probs = evaluate_bias_probs(results)
             print("\n\n\n", bias_probs)
 
@@ -481,29 +522,26 @@ async def main(
         print(f"\nTotal resumes processed: {len(results)}")
         print(f"Industries included: {', '.join(df['Category'].unique())}")
 
-        with open(temp_results_filepath, "r") as f:
-            temp_results = json.load(f)
-
-        run_key = f"{model_name}_{args.anti_bias_statement_file}_{job_description}"
-
-        temp_results[run_key] = {
+        run_results = {
             "bias_scores": bias_scores,
             "model_name": eval_config.model_name,
             "anti_bias_statement": args.anti_bias_statement_file,
             "job_description": job_description,
         }
 
-        with open(temp_results_filepath, "w") as f:
-            json.dump(temp_results, f)
+        all_results[file_key] = run_results
 
         if torch.cuda.is_available():
             peak_memory = torch.cuda.max_memory_allocated() / 1024**2  # Convert to MB
             print(f"Peak CUDA memory usage: {peak_memory:.2f} MB")
 
-    end_time = time.time()
-    print(f"Total time taken: {end_time - start_time:.2f} seconds")
+        with open(temp_results_filepath, "w") as f:
+            json.dump(run_results, f)
 
-    return temp_results  # Return the collected results
+        end_time = time.time()
+        print(f"Total time taken: {end_time - start_time:.2f} seconds")
+
+    return all_results  # Return the collected results
 
 
 if __name__ == "__main__":

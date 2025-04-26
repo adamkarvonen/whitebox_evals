@@ -18,6 +18,7 @@ MODEL_CONFIGS = {
             75: {"layer": 19},
         },
         "batch_size": 1,
+        "trainer_id": 65,
     },
     "google/gemma-2-9b-it": {
         "total_layers": 40,  # Adding for reference
@@ -27,6 +28,7 @@ MODEL_CONFIGS = {
             75: {"layer": 31},
         },
         "batch_size": 4,
+        "trainer_id": 131,
     },
     "google/gemma-2-27b-it": {
         "total_layers": 44,  # Adding for reference
@@ -36,6 +38,7 @@ MODEL_CONFIGS = {
             75: {"layer": 34},
         },
         "batch_size": 1,
+        "trainer_id": 131,
     },
     "mistralai/Ministral-8B-Instruct-2410": {
         "total_layers": 36,
@@ -45,6 +48,7 @@ MODEL_CONFIGS = {
             75: {"layer": 27},
         },
         "batch_size": 8,
+        "trainer_id": 2,
     },
     "mistralai/Mistral-Small-24B-Instruct-2501": {
         "total_layers": 40,
@@ -54,6 +58,7 @@ MODEL_CONFIGS = {
             75: {"layer": 30},
         },
         "batch_size": 6,
+        "trainer_id": 2,
     },
     "Qwen/Qwen2.5-3B-Instruct": {
         "total_layers": 36,
@@ -63,6 +68,7 @@ MODEL_CONFIGS = {
             75: {"layer": 27},
         },
         "batch_size": 16,
+        "trainer_id": -1,
     },
 }
 

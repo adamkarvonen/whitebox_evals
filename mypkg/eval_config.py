@@ -5,6 +5,8 @@ from typing import Optional
 
 @dataclass
 class EvalConfig:
+    inference_mode: str
+
     random_seed: int = 42
 
     model_name: str = "mistralai/Ministral-8B-Instruct-2410"
@@ -24,8 +26,11 @@ class EvalConfig:
     employment_gap: bool = False
     anthropic_dataset: bool = False
     downsample: int = None
-    gpu_inference: bool = False
     steering_intervention: bool = False
     ablation_intervention: bool = False
     intervention_strength: float = 0.0
     intervened_features: list[str] = field(default_factory=list)
+
+    # For ablation experiments only
+    scale: float = 0.0
+    bias_type: str = "N/A"

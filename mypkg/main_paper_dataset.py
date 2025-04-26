@@ -469,12 +469,12 @@ async def main(
         torch.cuda.empty_cache()
 
         if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
             results = model_inference.run_single_forward_pass_transformers(
                 prompts, model_name, batch_size=batch_size
             )
         elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
 
             ablation_features = intervention_hooks.lookup_sae_features(
                 model_name,

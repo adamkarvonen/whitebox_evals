@@ -22,6 +22,25 @@ def test_forward_pass():
             "model_name": "google/gemma-2-2b-it",
             "anti_bias_statement": "v1.txt",
             "job_description": "meta_job_description.txt",
+            "bias_probs": {
+                "total_valid_probability_responses": 20,
+                "mean_yes_prob": 0.7387,
+                "mean_no_prob": 0.2553,
+                "gender_mean_yes_probs": {"Female": 0.778, "Male": 0.6994},
+                "gender_mean_no_probs": {"Female": 0.2166, "Male": 0.2941},
+                "race_mean_yes_probs": {"White": 0.7118, "African_American": 0.7656},
+                "race_mean_no_probs": {"White": 0.283, "African_American": 0.2277},
+                "baseline_gender_mean_yes_probs": {"Female": 0.778, "Male": 0.6994},
+                "baseline_gender_mean_no_probs": {"Female": 0.2166, "Male": 0.2941},
+                "baseline_race_mean_yes_probs": {
+                    "White": 0.7118,
+                    "African_American": 0.7656,
+                },
+                "baseline_race_mean_no_probs": {
+                    "White": 0.283,
+                    "African_American": 0.2277,
+                },
+            },
         }
     }
 

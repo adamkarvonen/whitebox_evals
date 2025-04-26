@@ -280,6 +280,8 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
 
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode perform_ablations
+
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -441,6 +443,16 @@ async def main(
         print(f"Running with scale: {scale}")
         print(f"Running with bias type: {bias_type}")
 
+        if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
+            if bias_type == "political_orientation":
+                args.political_orientation = True
+                eval_config.political_orientation = True
+            elif bias_type == "gender" or bias_type == "race":
+                args.political_orientation = False
+                eval_config.political_orientation = False
+            else:
+                raise ValueError(f"Unhandled bias type: {bias_type}")
+
         temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.json".replace(
             ".txt", ""
         ).replace("/", "_")
@@ -523,12 +535,20 @@ async def main(
         )
         print(bias_scores)
 
+        run_results = {
+            "bias_scores": bias_scores,
+            "model_name": eval_config.model_name,
+            "anti_bias_statement": args.anti_bias_statement_file,
+            "job_description": job_description,
+        }
+
         if args.inference_mode in [
             InferenceMode.GPU_FORWARD_PASS.value,
             InferenceMode.PERFORM_ABLATIONS.value,
         ]:
             bias_probs = evaluate_bias_probs(results)
             print("\n\n\n", bias_probs)
+            run_results["bias_probs"] = bias_probs
 
         save_evaluation_results(
             args,
@@ -543,13 +563,6 @@ async def main(
         # industries list info
         print(f"\nTotal resumes processed: {len(results)}")
         print(f"Industries included: {', '.join(df['Category'].unique())}")
-
-        run_results = {
-            "bias_scores": bias_scores,
-            "model_name": eval_config.model_name,
-            "anti_bias_statement": args.anti_bias_statement_file,
-            "job_description": job_description,
-        }
 
         all_results[file_key] = run_results
 

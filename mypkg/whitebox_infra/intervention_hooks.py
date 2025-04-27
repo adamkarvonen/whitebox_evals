@@ -239,6 +239,64 @@ def get_conditional_adaptive_clamping_hook(
     return hook_fn
 
 
+def get_conditional_adaptive_steering_hook(
+    encoder_vectors: list[Float[Tensor, "d_model"]],
+    decoder_vectors: list[Float[Tensor, "d_model"]],
+    scales: list[float],
+    encoder_thresholds: list[float],
+) -> Callable:
+    """Creates a hook function that conditionally clamps activations.
+
+    Combines conditional intervention with clamping - only clamps activations
+    when they exceed the encoder threshold with the decoder intervention.
+
+    Args:
+        encoder_vectors: List of vectors defining directions to monitor
+        decoder_vectors: List of vectors defining intervention directions
+        scales: Target values for clamping
+        encoder_thresholds: Threshold values that trigger clamping
+
+    Returns:
+        Hook function that conditionally clamps and modifies activations
+
+    Note:
+        Most sophisticated intervention type, combining benefits of
+        conditional application and activation clamping
+    """
+
+    def hook_fn(module, input, output):
+        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
+
+        B, L, D = resid_BLD.shape
+
+        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
+            encoder_vectors, decoder_vectors, scales, encoder_thresholds
+        ):
+            # Get encoder activations
+            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
+
+            max_act_B = einops.reduce(feature_acts_BL, "B L -> B", "max")
+
+            # Create mask for where encoder activation exceeds threshold
+            intervention_mask_BL = feature_acts_BL > encoder_threshold
+
+            # Calculate clamping amount only where mask is True
+            decoder_BLD = (
+                feature_acts_BL[:, :, None] + (coeff * max_act_B[:, None, None])
+            ) * decoder_vector_D[None, None, :]
+
+            # Apply clamping only where both mask is True and activation is positive
+            resid_BLD = torch.where(
+                (intervention_mask_BL[:, :, None] & (feature_acts_BL[:, :, None] > 0)),
+                resid_BLD + decoder_BLD,
+                resid_BLD,
+            )
+
+        return (resid_BLD,) + output[1:]
+
+    return hook_fn
+
+
 def get_constant_steering_hook(
     encoder_vectors: list[Float[Tensor, "d_model"]],
     decoder_vectors: list[Float[Tensor, "d_model"]],

@@ -334,6 +334,12 @@ def run_single_forward_pass_transformers(
                         encoder_vectors, decoder_vectors, scales, encoder_biases
                     )
                 )
+            elif ablation_type == "adaptive_steering":
+                ablation_hook = (
+                    intervention_hooks.get_conditional_adaptive_steering_hook(
+                        encoder_vectors, decoder_vectors, scales, encoder_biases
+                    )
+                )
             elif ablation_type == "targeted":
                 ablation_hook = intervention_hooks.get_targeted_steering_hook(
                     encoder_vectors,

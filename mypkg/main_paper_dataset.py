@@ -355,6 +355,7 @@ async def main(
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
         anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
+        anti_bias_statement_files = ["v11.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
@@ -362,9 +363,9 @@ async def main(
         model_names = [
             # "google/gemma-2-2b-it",
             "google/gemma-2-27b-it",
-            "google/gemma-2-9b-it",
-            "mistralai/Ministral-8B-Instruct-2410",
-            "mistralai/Mistral-Small-24B-Instruct-2501",
+            # "google/gemma-2-9b-it",
+            # "mistralai/Ministral-8B-Instruct-2410",
+            # "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
             # "openai/gpt-4o-2024-08-06",
             # "deepseek/deepseek-r1-distill-llama-70b"
@@ -414,8 +415,8 @@ async def main(
         args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
         or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
     ):
-        scales = [1.0, 2.0]
-        bias_types = ["gender", "race", "political_orientation"]
+        scales = [5.0]
+        bias_types = ["political_orientation", "gender", "race"]
 
         # override bias_types and scales if provided
         if args.bias_type is not None:
@@ -473,7 +474,10 @@ async def main(
             ".txt", ""
         ).replace("/", "_")
 
-        if args.inference_mode == InferenceMode.LOGIT_LENS.value:
+        if (
+            args.inference_mode == InferenceMode.LOGIT_LENS.value
+            or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
+        ):
             temp_results_filename = temp_results_filename.replace(".json", ".pkl")
 
         temp_results_folder = os.path.join(
@@ -595,7 +599,11 @@ async def main(
             "eval_config": asdict(eval_config),
         }
 
-        if InferenceMode.LOGIT_LENS.value not in args.inference_mode:
+        if (
+            InferenceMode.LOGIT_LENS.value not in args.inference_mode
+            and InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
+            not in args.inference_mode
+        ):
             # Quick and dirty check to see if prompts are the same from run to run
             total_len = 0
             for result in results:
@@ -631,7 +639,10 @@ async def main(
             with open(temp_results_filepath, "w") as f:
                 json.dump(run_results, f)
 
-        elif InferenceMode.LOGIT_LENS.value in args.inference_mode:
+        elif (
+            InferenceMode.LOGIT_LENS.value in args.inference_mode
+            or InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value in args.inference_mode
+        ):
             run_results["logit_lens"] = results
             with open(temp_results_filepath, "wb") as f:
                 pickle.dump(run_results, f)

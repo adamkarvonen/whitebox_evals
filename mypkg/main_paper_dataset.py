@@ -21,6 +21,7 @@ import gc
 import time
 from typing import Optional, Any
 from enum import Enum
+import pickle
 
 from mypkg.eval_config import EvalConfig
 from mypkg.pipeline.setup.dataset import (
@@ -40,6 +41,7 @@ from mypkg.pipeline.infra.hiring_bias_prompts import (
 import mypkg.pipeline.infra.model_inference as model_inference
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
+import mypkg.whitebox_infra.logit_lens as logit_lens
 
 
 # Define the InferenceMode Enum
@@ -48,6 +50,7 @@ class InferenceMode(Enum):
     GPU_FORWARD_PASS = "gpu_forward_pass"
     PERFORM_ABLATIONS = "perform_ablations"
     OPEN_ROUTER = "open_router"
+    LOGIT_LENS = "logit_lens"
 
     def __str__(self):
         return self.value
@@ -282,6 +285,8 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode perform_ablations
 
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens
+
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -382,6 +387,8 @@ async def main(
     else:
         max_completion_tokens = 5
 
+    MAX_LENGTH = 2500
+
     if model_names[0] in REASONING_MODELS:
         assert len(model_names) == 1
         max_completion_tokens = None
@@ -471,7 +478,7 @@ async def main(
         if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
             results = model_inference.run_single_forward_pass_transformers(
-                prompts, model_name, batch_size=batch_size
+                prompts, model_name, batch_size=batch_size, max_length=MAX_LENGTH
             )
         elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
@@ -493,6 +500,7 @@ async def main(
                 ablation_features=ablation_features,
                 ablation_type="adaptive_clamping",
                 scale=scale,
+                max_length=MAX_LENGTH,
             )
 
         elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
@@ -501,6 +509,14 @@ async def main(
                 model_name,
                 max_new_tokens=max_completion_tokens,
                 model=vllm_model,
+            )
+        elif args.inference_mode == InferenceMode.LOGIT_LENS.value:
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+            results = logit_lens.run_logit_lens(
+                prompts,
+                model_name,
+                batch_size=batch_size,
+                max_length=MAX_LENGTH,
             )
         elif args.inference_mode == InferenceMode.OPEN_ROUTER.value:
             # Use the lookup table if the model name is present
@@ -512,43 +528,55 @@ async def main(
             # This case should not be reachable due to argparse choices
             raise ValueError(f"Unhandled inference mode: {args.inference_mode}")
 
-        # Quick and dirty check to see if prompts are the same from run to run
-        total_len = 0
-        for result in results:
-            total_len += len(result.prompt)
-        print(f"Total length of prompts: {total_len}")
-
-        bias_scores = evaluate_bias(
-            results, system_prompt_filename=args.system_prompt_filename
-        )
-        print(bias_scores)
-
         run_results = {
-            "bias_scores": bias_scores,
             "model_name": eval_config.model_name,
             "anti_bias_statement": args.anti_bias_statement_file,
             "job_description": job_description,
+            "eval_config": asdict(eval_config),
         }
 
-        if args.inference_mode in [
-            InferenceMode.GPU_FORWARD_PASS.value,
-            InferenceMode.PERFORM_ABLATIONS.value,
-        ]:
-            bias_probs = evaluate_bias_probs(results)
-            print("\n\n\n", bias_probs)
-            run_results["bias_probs"] = bias_probs
+        if InferenceMode.LOGIT_LENS.value not in args.inference_mode:
+            # Quick and dirty check to see if prompts are the same from run to run
+            total_len = 0
+            for result in results:
+                total_len += len(result.prompt)
+            print(f"Total length of prompts: {total_len}")
 
-        save_evaluation_results(
-            args,
-            model_name,
-            df,
-            results,
-            bias_scores,
-            cache_dir,
-            timestamp,
-            eval_config,
-        )
-        # industries list info
+            bias_scores = evaluate_bias(
+                results, system_prompt_filename=args.system_prompt_filename
+            )
+            print(bias_scores)
+
+            run_results["bias_scores"] = bias_scores
+
+            if args.inference_mode in [
+                InferenceMode.GPU_FORWARD_PASS.value,
+                InferenceMode.PERFORM_ABLATIONS.value,
+            ]:
+                bias_probs = evaluate_bias_probs(results)
+                print("\n\n\n", bias_probs)
+                run_results["bias_probs"] = bias_probs
+
+            save_evaluation_results(
+                args,
+                model_name,
+                df,
+                results,
+                bias_scores,
+                cache_dir,
+                timestamp,
+                eval_config,
+            )
+
+            with open(temp_results_filepath, "w") as f:
+                json.dump(run_results, f)
+
+        elif InferenceMode.LOGIT_LENS.value in args.inference_mode:
+            run_results["logit_lens"] = results
+            temp_results_filepath = temp_results_filepath.replace(".json", ".pkl")
+            with open(temp_results_filepath, "wb") as f:
+                pickle.dump(run_results, f)
+
         print(f"\nTotal resumes processed: {len(results)}")
         print(f"Industries included: {', '.join(df['Category'].unique())}")
 
@@ -558,13 +586,10 @@ async def main(
             peak_memory = torch.cuda.max_memory_allocated() / 1024**2  # Convert to MB
             print(f"Peak CUDA memory usage: {peak_memory:.2f} MB")
 
-        with open(temp_results_filepath, "w") as f:
-            json.dump(run_results, f)
-
         end_time = time.time()
         print(f"Total time taken: {end_time - start_time:.2f} seconds")
 
-    return all_results  # Return the collected results
+    return all_results
 
 
 if __name__ == "__main__":

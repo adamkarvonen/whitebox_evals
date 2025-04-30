@@ -401,3 +401,41 @@ def collect_activations(
         )
 
     return activations_BLD
+
+
+def get_activations_per_layer(
+    model: AutoModelForCausalLM,
+    submodules: list[torch.nn.Module],
+    tokens_batch: dict[str, torch.Tensor],
+    get_final_token_only: bool = False,
+) -> tuple[dict[torch.nn.Module, torch.Tensor], torch.Tensor]:
+    activations_BLD = {}
+
+    def gather_target_act_hook(module, inputs, outputs):
+        nonlocal activations_BLD
+        assert isinstance(outputs, tuple)
+        if get_final_token_only:
+            activations_BLD[module] = outputs[0][:, -1:, :]
+        else:
+            activations_BLD[module] = outputs[0]
+
+    all_handles = []
+
+    try:
+        for submodule in submodules:
+            handle = submodule.register_forward_hook(gather_target_act_hook)
+            all_handles.append(handle)
+
+        logits_BLV = model(**tokens_batch).logits
+
+        if get_final_token_only:
+            logits_BLV = logits_BLV[:, -1:, :]
+
+    except Exception as e:
+        print(e)
+        raise e
+    finally:
+        for handle in all_handles:
+            handle.remove()
+
+    return activations_BLD, logits_BLV

@@ -179,6 +179,54 @@ def get_all_prompts_activations(
 # ================================
 
 
+def get_batched_tokens(
+    tokenizer: AutoTokenizer,
+    model_name: str,
+    dataset_name: str,
+    num_tokens: int,
+    batch_size: int,
+    device: torch.device,
+    context_length: int,
+    force_rebuild_tokens: bool = False,
+    tokens_folder: str = "tokens",
+) -> list[dict[str, torch.Tensor]]:
+    # E.g. "tokens/togethercomputer_RedPajama-Data-V2_1000000_google-gemma-2-2b.pt"
+    filename = f"{tokens_folder}/{dataset_name.replace('/', '_')}_{num_tokens}_{model_name.replace('/', '_')}.pt"
+    os.makedirs(tokens_folder, exist_ok=True)
+
+    # If we haven't built the token file or if user wants to force a rebuild
+    if (not os.path.exists(filename)) or force_rebuild_tokens:
+        token_dict = load_and_tokenize_and_concat_dataset(
+            dataset_name=dataset_name,
+            ctx_len=context_length,
+            num_tokens=num_tokens,
+            tokenizer=tokenizer,
+            add_bos=True,
+        )
+        token_dict = {k: v.cpu() for k, v in token_dict.items()}
+        torch.save(token_dict, filename)
+        print(f"Saved tokenized dataset to {filename}")
+    else:
+        print(f"Loading tokenized dataset from {filename}")
+        token_dict = torch.load(filename)
+
+    token_dict = {
+        k: v.to(device) if torch.is_tensor(v) else v for k, v in token_dict.items()
+    }
+
+    batched_tokens = []
+
+    for i in range(0, token_dict["input_ids"].shape[0], batch_size):
+        batched_tokens.append(
+            {
+                "input_ids": token_dict["input_ids"][i : i + batch_size],
+                "attention_mask": token_dict["attention_mask"][i : i + batch_size],
+            }
+        )
+
+    return batched_tokens
+
+
 def get_interp_prompts(
     model: AutoModelForCausalLM,
     submodule: torch.nn.Module,
@@ -213,39 +261,17 @@ def get_interp_prompts(
     device = model.device
     model_name = getattr(model.config, "_name_or_path", "unknown_model")
 
-    # E.g. "tokens/togethercomputer_RedPajama-Data-V2_1000000_google-gemma-2-2b.pt"
-    filename = f"{tokens_folder}/{dataset_name.replace('/', '_')}_{num_tokens}_{model_name.replace('/', '_')}.pt"
-    os.makedirs(tokens_folder, exist_ok=True)
-
-    # If we haven't built the token file or if user wants to force a rebuild
-    if (not os.path.exists(filename)) or force_rebuild_tokens:
-        token_dict = load_and_tokenize_and_concat_dataset(
-            dataset_name=dataset_name,
-            ctx_len=context_length,
-            num_tokens=num_tokens,
-            tokenizer=tokenizer,
-            add_bos=True,
-        )
-        token_dict = {k: v.cpu() for k, v in token_dict.items()}
-        torch.save(token_dict, filename)
-        print(f"Saved tokenized dataset to {filename}")
-    else:
-        print(f"Loading tokenized dataset from {filename}")
-        token_dict = torch.load(filename)
-
-    token_dict = {
-        k: v.to(device) if torch.is_tensor(v) else v for k, v in token_dict.items()
-    }
-
-    batched_tokens = []
-
-    for i in range(0, token_dict["input_ids"].shape[0], batch_size):
-        batched_tokens.append(
-            {
-                "input_ids": token_dict["input_ids"][i : i + batch_size],
-                "attention_mask": token_dict["attention_mask"][i : i + batch_size],
-            }
-        )
+    batched_tokens = get_batched_tokens(
+        tokenizer=tokenizer,
+        model_name=model_name,
+        dataset_name=dataset_name,
+        num_tokens=num_tokens,
+        batch_size=batch_size,
+        device=device,
+        context_length=context_length,
+        force_rebuild_tokens=force_rebuild_tokens,
+        tokens_folder=tokens_folder,
+    )
 
     # Now get the max-activating prompts for the given dim_indices
     max_tokens_FKL, max_activations_FKL = get_max_activating_prompts(

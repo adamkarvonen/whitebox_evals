@@ -57,7 +57,7 @@ MODEL_CONFIGS = {
             50: {"layer": 20},
             75: {"layer": 30},
         },
-        "batch_size": 6,
+        "batch_size": 4,
         "trainer_id": 2,
     },
     "Qwen/Qwen2.5-3B-Instruct": {

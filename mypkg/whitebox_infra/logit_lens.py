@@ -38,12 +38,16 @@ def run_final_block(
 
 
 def apply_logit_lens(
-    acts_BLD: torch.Tensor, model: AutoModelForCausalLM, final_token_only: bool = True
+    acts_BLD: torch.Tensor,
+    model: AutoModelForCausalLM,
+    final_token_only: bool = True,
+    add_final_layer: bool = True,
 ) -> torch.Tensor:
     if final_token_only:
         acts_BLD = acts_BLD[:, -1:, :]
 
-    # acts_BLD += run_final_block(acts_BLD, model)
+    if add_final_layer:
+        acts_BLD += run_final_block(acts_BLD, model)
 
     logits_BLV = model.lm_head(model.model.norm(acts_BLD))
     return logits_BLV
@@ -120,6 +124,7 @@ def get_yes_no_statistics(
 def run_logit_lens(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     model_name: str,
+    add_final_layer: bool = False,
     batch_size: int = 64,
     padding_side: str = "left",
     max_length: int = 8192,
@@ -194,7 +199,10 @@ def run_logit_lens(
 
         for i, layer in enumerate(all_submodules):
             logit_lens_BLV = apply_logit_lens(
-                activations_BLD[layer], model, final_token_only=get_final_token_only
+                activations_BLD[layer],
+                model,
+                final_token_only=get_final_token_only,
+                add_final_layer=add_final_layer,
             )
             kl_BL = kl_between_logits(logits_BLV, logit_lens_BLV)
             kl_B = kl_BL.mean(dim=1)

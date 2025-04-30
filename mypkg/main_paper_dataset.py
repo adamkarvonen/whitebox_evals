@@ -285,7 +285,7 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode perform_ablations
 
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens --political_orientation
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
     os.makedirs(cache_dir, exist_ok=True)
@@ -351,16 +351,17 @@ async def main(
 
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 18)]
+        # anti_bias_statement_files = ["v2.txt", "v11.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
     if args.model_name is None:
         model_names = [
-            "google/gemma-2-2b-it",
-            # "google/gemma-2-9b-it",
-            # "google/gemma-2-27b-it",
-            # "mistralai/Ministral-8B-Instruct-2410",
-            # "mistralai/Mistral-Small-24B-Instruct-2501",
+            # "google/gemma-2-2b-it",
+            "google/gemma-2-9b-it",
+            "google/gemma-2-27b-it",
+            "mistralai/Ministral-8B-Instruct-2410",
+            "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
             # "openai/gpt-4o-2024-08-06",
             # "deepseek/deepseek-r1-distill-llama-70b"
@@ -402,6 +403,9 @@ async def main(
         assert len(model_names) == 1
         vllm_model = vllm.LLM(model=model_names[0], dtype="bfloat16")
 
+    general_bools = [True, False]
+    general_bools = [False]
+
     # Determine scales and bias_types based on inference_mode
     if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
         scales = [0.0, 1.0, 2.0]
@@ -424,8 +428,14 @@ async def main(
         anti_bias_statement_file,
         scale,
         bias_type,
+        general_bool,
     ) in itertools.product(
-        job_descriptions, model_names, anti_bias_statement_files, scales, bias_types
+        job_descriptions,
+        model_names,
+        anti_bias_statement_files,
+        scales,
+        bias_types,
+        general_bools,
     ):
         eval_config.anti_bias_statement_file = anti_bias_statement_file
         eval_config.job_description_file = job_description
@@ -448,9 +458,13 @@ async def main(
             else:
                 raise ValueError(f"Unhandled bias type: {bias_type}")
 
-        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.json".replace(
+        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}_general_{str(general_bool)}.json".replace(
             ".txt", ""
         ).replace("/", "_")
+
+        if args.inference_mode == InferenceMode.LOGIT_LENS.value:
+            temp_results_filename = temp_results_filename.replace(".json", ".pkl")
+
         temp_results_folder = os.path.join(
             args.inference_mode, model_name.replace("/", "_")
         )
@@ -515,6 +529,7 @@ async def main(
             results = logit_lens.run_logit_lens(
                 prompts,
                 model_name,
+                add_final_layer=general_bool,
                 batch_size=batch_size,
                 max_length=MAX_LENGTH,
             )
@@ -573,7 +588,6 @@ async def main(
 
         elif InferenceMode.LOGIT_LENS.value in args.inference_mode:
             run_results["logit_lens"] = results
-            temp_results_filepath = temp_results_filepath.replace(".json", ".pkl")
             with open(temp_results_filepath, "wb") as f:
                 pickle.dump(run_results, f)
 

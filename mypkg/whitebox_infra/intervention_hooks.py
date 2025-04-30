@@ -2,7 +2,7 @@ import torch
 import einops
 from jaxtyping import Float
 from torch import Tensor
-from typing import Callable
+from typing import Callable, Optional
 from transformers import AutoTokenizer
 
 import mypkg.whitebox_infra.dictionaries.base_sae as base_sae
@@ -376,3 +376,53 @@ def get_targeted_steering_hook(
         return (resid_BLD,) + output[1:]
 
     return hook_fn
+
+
+def get_ablation_hook(
+    ablation_type: str,
+    encoder_vectors: list[Float[Tensor, "d_model"]],
+    decoder_vectors: list[Float[Tensor, "d_model"]],
+    scales: list[float],
+    encoder_biases: list[float],
+    resume_prompt_results_batch: Optional[
+        list[hiring_bias_prompts.ResumePromptResult]
+    ] = None,
+    input_ids: Optional[torch.Tensor] = None,
+    tokenizer: Optional[AutoTokenizer] = None,
+) -> Callable:
+    pass
+
+    if ablation_type == "clamping":
+        ablation_hook = get_conditional_clamping_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+    elif ablation_type == "steering":
+        ablation_hook = get_conditional_steering_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+    elif ablation_type == "constant":
+        ablation_hook = get_constant_steering_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+    elif ablation_type == "adaptive_clamping":
+        ablation_hook = get_conditional_adaptive_clamping_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+    elif ablation_type == "adaptive_steering":
+        ablation_hook = get_conditional_adaptive_steering_hook(
+            encoder_vectors, decoder_vectors, scales, encoder_biases
+        )
+    elif ablation_type == "targeted":
+        ablation_hook = get_targeted_steering_hook(
+            encoder_vectors,
+            decoder_vectors,
+            scales,
+            encoder_biases,
+            resume_prompt_results_batch,
+            input_ids,
+            tokenizer,
+        )
+    else:
+        raise ValueError(f"Invalid ablation type: {ablation_type}")
+
+    return ablation_hook

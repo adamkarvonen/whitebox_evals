@@ -14,6 +14,7 @@ from dataclasses import asdict
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.data_utils as data_utils
+import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
 
 
 def run_final_block(
@@ -212,5 +213,130 @@ def run_logit_lens(
             for j in range(len(layer_stats)):
                 layer_stats[j]["kl"] = kl_B[j].item()
             per_layer_results[i].extend(layer_stats)
+
+    return per_layer_results
+
+
+@torch.inference_mode()
+def run_logit_lens_with_intervention(
+    prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
+    model_name: str,
+    ablation_features: torch.Tensor,
+    ablation_type: str,
+    scale: float,
+    add_final_layer: bool = False,
+    batch_size: int = 64,
+    padding_side: str = "left",
+    max_length: int = 8192,
+    model: Optional[AutoModelForCausalLM] = None,
+) -> dict:
+    assert padding_side in ["left", "right"]
+
+    dtype = torch.bfloat16
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if model is None:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
+        )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    original_prompts = [p.prompt for p in prompt_dicts]
+
+    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
+    dataloader = data_utils.create_simple_dataloader(
+        formatted_prompts,
+        [0] * len(formatted_prompts),
+        prompt_dicts,
+        model_name,
+        device,
+        batch_size=batch_size,
+        max_length=max_length,
+    )
+
+    num_layers = len(list(model.model.layers))
+    print(f"Number of layers: {num_layers} for {model_name}")
+
+    all_submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
+
+    get_final_token_only = True
+
+    yes_ids_t, no_ids_t = model_utils.get_yes_no_ids(tokenizer, device)
+
+    per_layer_results = {}
+
+    for i, layer in enumerate(all_submodules):
+        per_layer_results[i] = []
+    per_layer_results["output"] = []
+
+    trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
+    sae = model_utils.load_model_sae(
+        model_name, device, dtype, 25, trainer_id=trainer_id
+    )
+    scales = [scale] * len(ablation_features)
+    encoder_vectors, decoder_vectors, encoder_biases = (
+        intervention_hooks.get_sae_vectors(ablation_features, sae)
+    )
+    sae = sae.to("cpu")
+    hook_layer = sae.hook_layer
+    del sae
+    torch.cuda.empty_cache()
+
+    ablation_hook = intervention_hooks.get_ablation_hook(
+        ablation_type,
+        encoder_vectors,
+        decoder_vectors,
+        scales,
+        encoder_biases,
+    )
+
+    submodule = model_utils.get_submodule(model, hook_layer)
+    intervention_handle = submodule.register_forward_hook(ablation_hook)
+
+    for batch in tqdm(dataloader, desc="Processing prompts"):
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
+            model,
+            all_submodules,
+            model_inputs,
+            get_final_token_only=get_final_token_only,
+        )
+
+        output_stats = get_yes_no_statistics(logits_BLV, yes_ids_t, no_ids_t, tokenizer)
+        for i in range(len(output_stats)):
+            output_stats[i]["label"] = labels[i].item()
+            output_stats[i]["kl"] = 0.0
+            output_stats[i]["resume_prompt_result"] = asdict(
+                resume_prompt_results_batch[i]
+            )
+
+        per_layer_results["output"].extend(output_stats)
+
+        for i, layer in enumerate(all_submodules):
+            logit_lens_BLV = apply_logit_lens(
+                activations_BLD[layer],
+                model,
+                final_token_only=get_final_token_only,
+                add_final_layer=add_final_layer,
+            )
+            kl_BL = kl_between_logits(logits_BLV, logit_lens_BLV)
+            kl_B = kl_BL.mean(dim=1)
+            layer_stats = get_yes_no_statistics(
+                logit_lens_BLV, yes_ids_t, no_ids_t, tokenizer
+            )
+            for j in range(len(layer_stats)):
+                layer_stats[j]["kl"] = kl_B[j].item()
+            per_layer_results[i].extend(layer_stats)
+
+    intervention_handle.remove()
 
     return per_layer_results

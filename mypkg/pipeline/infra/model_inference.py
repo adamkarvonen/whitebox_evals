@@ -306,6 +306,7 @@ def run_single_forward_pass_transformers(
         hook_layer = sae.hook_layer
         del sae
         torch.cuda.empty_cache()
+
     for batch in tqdm(dataloader, desc="Processing prompts"):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
             batch
@@ -316,40 +317,16 @@ def run_single_forward_pass_transformers(
         }
 
         if ablation_features is not None:
-            if ablation_type == "clamping":
-                ablation_hook = intervention_hooks.get_conditional_clamping_hook(
-                    encoder_vectors, decoder_vectors, scales, encoder_biases
-                )
-            elif ablation_type == "steering":
-                ablation_hook = intervention_hooks.get_conditional_steering_hook(
-                    encoder_vectors, decoder_vectors, scales, encoder_biases
-                )
-            elif ablation_type == "constant":
-                ablation_hook = intervention_hooks.get_constant_steering_hook(
-                    encoder_vectors, decoder_vectors, scales, encoder_biases
-                )
-            elif ablation_type == "adaptive_clamping":
-                ablation_hook = (
-                    intervention_hooks.get_conditional_adaptive_clamping_hook(
-                        encoder_vectors, decoder_vectors, scales, encoder_biases
-                    )
-                )
-            elif ablation_type == "adaptive_steering":
-                ablation_hook = (
-                    intervention_hooks.get_conditional_adaptive_steering_hook(
-                        encoder_vectors, decoder_vectors, scales, encoder_biases
-                    )
-                )
-            elif ablation_type == "targeted":
-                ablation_hook = intervention_hooks.get_targeted_steering_hook(
-                    encoder_vectors,
-                    decoder_vectors,
-                    scales,
-                    encoder_biases,
-                    resume_prompt_results_batch,
-                    input_ids,
-                    tokenizer,
-                )
+            ablation_hook = intervention_hooks.get_ablation_hook(
+                ablation_type,
+                encoder_vectors,
+                decoder_vectors,
+                scales,
+                encoder_biases,
+                resume_prompt_results_batch,
+                input_ids,
+                tokenizer,
+            )
 
             submodule = model_utils.get_submodule(model, hook_layer)
             handle = submodule.register_forward_hook(ablation_hook)

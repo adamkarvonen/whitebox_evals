@@ -51,6 +51,7 @@ class InferenceMode(Enum):
     PERFORM_ABLATIONS = "perform_ablations"
     OPEN_ROUTER = "open_router"
     LOGIT_LENS = "logit_lens"
+    LOGIT_LENS_WITH_INTERVENTION = "logit_lens_with_intervention"
 
     def __str__(self):
         return self.value
@@ -287,6 +288,8 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens --political_orientation
 
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens_with_intervention
+
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -350,16 +353,16 @@ async def main(
     job_descriptions = ["short_meta_job_description.txt"]
 
     if args.anti_bias_statement_file is None:
-        anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 18)]
-        # anti_bias_statement_files = ["v2.txt", "v11.txt"]
+        anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
+        anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
     if args.model_name is None:
         model_names = [
             # "google/gemma-2-2b-it",
-            "google/gemma-2-9b-it",
             "google/gemma-2-27b-it",
+            "google/gemma-2-9b-it",
             "mistralai/Ministral-8B-Instruct-2410",
             "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
@@ -404,11 +407,14 @@ async def main(
         vllm_model = vllm.LLM(model=model_names[0], dtype="bfloat16")
 
     general_bools = [True, False]
-    general_bools = [False]
+    # general_bools = [False]
 
     # Determine scales and bias_types based on inference_mode
-    if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-        scales = [0.0, 1.0, 2.0]
+    if (
+        args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
+        or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
+    ):
+        scales = [1.0, 2.0]
         bias_types = ["gender", "race", "political_orientation"]
 
         # override bias_types and scales if provided
@@ -416,6 +422,8 @@ async def main(
             bias_types = [args.bias_type]
         if args.scale is not None:
             scales = [args.scale]
+
+        intervention_type = "adaptive_clamping"
     else:
         scales = [0.0]
         bias_types = ["N/A"]
@@ -448,7 +456,10 @@ async def main(
         print(f"Running with scale: {scale}")
         print(f"Running with bias type: {bias_type}")
 
-        if args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
+        if (
+            args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
+            or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
+        ):
             if bias_type == "political_orientation":
                 args.political_orientation = True
                 eval_config.political_orientation = True
@@ -507,16 +518,21 @@ async def main(
 
             print(ablation_features)
 
+            if len(ablation_features) == 0:
+                print(
+                    f"No ablation features found for {model_name} with bias type {bias_type} and anti-bias statement {anti_bias_statement_file}"
+                )
+                continue
+
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
                 batch_size=batch_size,
                 ablation_features=ablation_features,
-                ablation_type="adaptive_clamping",
+                ablation_type=intervention_type,
                 scale=scale,
                 max_length=MAX_LENGTH,
             )
-
         elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
@@ -532,6 +548,35 @@ async def main(
                 add_final_layer=general_bool,
                 batch_size=batch_size,
                 max_length=MAX_LENGTH,
+            )
+        elif args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value:
+            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+
+            ablation_features = intervention_hooks.lookup_sae_features(
+                model_name,
+                model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
+                25,
+                anti_bias_statement_file,
+                bias_type,
+            )
+
+            print(ablation_features)
+
+            if len(ablation_features) == 0:
+                print(
+                    f"No ablation features found for {model_name} with bias type {bias_type} and anti-bias statement {anti_bias_statement_file}"
+                )
+                continue
+
+            results = logit_lens.run_logit_lens_with_intervention(
+                prompts,
+                model_name,
+                add_final_layer=general_bool,
+                batch_size=batch_size,
+                max_length=MAX_LENGTH,
+                ablation_features=ablation_features,
+                ablation_type=intervention_type,
+                scale=scale,
             )
         elif args.inference_mode == InferenceMode.OPEN_ROUTER.value:
             # Use the lookup table if the model name is present

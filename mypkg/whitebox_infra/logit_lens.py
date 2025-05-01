@@ -10,11 +10,16 @@ from torch import Tensor
 import einops
 import torch.nn.functional as F
 from dataclasses import asdict
+import wandb
+import os
+from contextlib import contextmanager
+from torch import autocast
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.data_utils as data_utils
 import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
+import mypkg.whitebox_infra.interp_utils as interp_utils
 
 
 def run_final_block(
@@ -43,12 +48,22 @@ def apply_logit_lens(
     model: AutoModelForCausalLM,
     final_token_only: bool = True,
     add_final_layer: bool = True,
+    tuned_lens: torch.nn.Linear | None = None,
 ) -> torch.Tensor:
     if final_token_only:
         acts_BLD = acts_BLD[:, -1:, :]
 
     if add_final_layer:
+        assert tuned_lens is None, "Cannot add final layer if tuned_lens is provided"
         acts_BLD += run_final_block(acts_BLD, model)
+
+    if tuned_lens is not None:
+        orig_dtype = acts_BLD.dtype
+        assert add_final_layer is False, "Cannot add final layer if tuned_lens is provided"
+        with autocast("cuda", dtype=torch.bfloat16):
+            acts_BLD = tuned_lens(acts_BLD)  # weight stays fp32; activations & GEMM run bf16
+        acts_BLD = acts_BLD.to(orig_dtype)
+
 
     logits_BLV = model.lm_head(model.model.norm(acts_BLD))
     return logits_BLV
@@ -70,8 +85,8 @@ def kl_between_logits(
     B, L, V = logits_p_BLV.shape
 
     # Convert logits → probabilities / log-probabilities
-    p_BLV = torch.softmax(logits_p_BLV, dim=-1)
-    log_q_BLV = torch.log_softmax(logits_q_BLV, dim=-1)
+    p_BLV = torch.softmax(logits_p_BLV.float(), dim=-1)
+    log_q_BLV = torch.log_softmax(logits_q_BLV.float(), dim=-1)
 
     # KL divergence per token; `reduction` handles batching
     kl = F.kl_div(log_q_BLV, p_BLV, reduction=reduction).sum(dim=-1)
@@ -130,6 +145,7 @@ def run_logit_lens(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
+    use_tuned_lenses: bool = False,
 ) -> dict:
     assert padding_side in ["left", "right"]
 
@@ -163,6 +179,12 @@ def run_logit_lens(
     all_submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
 
     get_final_token_only = True
+
+    if use_tuned_lenses:
+        assert add_final_layer is False, "Cannot add final layer if tuned_lenses are used"
+        tuned_lenses = load_lenses(model, model_name, device)
+    else:
+        tuned_lenses = [None] * num_layers
 
     yes_ids_t, no_ids_t = model_utils.get_yes_no_ids(tokenizer, device)
 
@@ -204,6 +226,7 @@ def run_logit_lens(
                 model,
                 final_token_only=get_final_token_only,
                 add_final_layer=add_final_layer,
+                tuned_lens=tuned_lenses[i],
             )
             kl_BL = kl_between_logits(logits_BLV, logit_lens_BLV)
             kl_B = kl_BL.mean(dim=1)
@@ -215,7 +238,6 @@ def run_logit_lens(
             per_layer_results[i].extend(layer_stats)
 
     return per_layer_results
-
 
 @torch.inference_mode()
 def run_logit_lens_with_intervention(
@@ -229,6 +251,7 @@ def run_logit_lens_with_intervention(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
+    use_tuned_lenses: bool = False,
 ) -> dict:
     assert padding_side in ["left", "right"]
 
@@ -262,6 +285,12 @@ def run_logit_lens_with_intervention(
     all_submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
 
     get_final_token_only = True
+
+    if use_tuned_lenses:
+        assert add_final_layer is False, "Cannot add final layer if tuned_lenses are used"
+        tuned_lenses = load_lenses(model, model_name, device)
+    else:
+        tuned_lenses = [None] * num_layers
 
     yes_ids_t, no_ids_t = model_utils.get_yes_no_ids(tokenizer, device)
 
@@ -327,6 +356,7 @@ def run_logit_lens_with_intervention(
                 model,
                 final_token_only=get_final_token_only,
                 add_final_layer=add_final_layer,
+                tuned_lens=tuned_lenses[i],
             )
             kl_BL = kl_between_logits(logits_BLV, logit_lens_BLV)
             kl_B = kl_BL.mean(dim=1)
@@ -340,3 +370,262 @@ def run_logit_lens_with_intervention(
     intervention_handle.remove()
 
     return per_layer_results
+
+@torch.no_grad()
+def logit_lens_on_batched_tokens(
+    model: AutoModelForCausalLM,
+    submodules: list[torch.nn.Module],
+    batched_tokens: dict[str, torch.Tensor],
+    get_final_token_only: bool = False,
+    add_final_layer: bool = False,
+    all_tuned_lenses: torch.nn.ModuleList | None = None,
+) -> dict[int, float]:
+    mean_kl_per_layer = {}
+
+    for i, layer in enumerate(submodules):
+        mean_kl_per_layer[i] = 0.0
+
+    for batch in tqdm(batched_tokens):
+        activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
+            model, submodules, batch, get_final_token_only=get_final_token_only
+        )
+
+        for i, layer in enumerate(submodules):
+            if all_tuned_lenses is not None:
+                tuned_lens = all_tuned_lenses[i]
+            else:
+                tuned_lens = None
+
+            logit_lens_BLV = apply_logit_lens(
+                activations_BLD[layer], model, final_token_only=get_final_token_only, add_final_layer=add_final_layer, tuned_lens=tuned_lens
+            )
+            kl = kl_between_logits(logits_BLV, logit_lens_BLV)
+            mean_kl_per_layer[i] += kl.mean().item()
+
+    for i, layer in enumerate(submodules):
+        mean_kl_per_layer[i] /= len(batched_tokens)
+
+    return mean_kl_per_layer
+
+def build_tuned_lenses(num_layers: int, d_model: int, device, dtype):
+    """
+    One learnable linear map per layer, all identity-initialised.
+    """
+    lenses = torch.nn.ModuleList([
+        torch.nn.Linear(d_model, d_model, bias=True, device=device, dtype=dtype)
+        for _ in range(num_layers)
+    ])
+    for lens in lenses:
+        torch.nn.init.eye_(lens.weight)      # start as plain logit lens
+        torch.nn.init.zeros_(lens.bias)
+    return lenses
+
+def train_tuned_lens(
+    model: AutoModelForCausalLM,
+    train_batched_tokens: list[dict[str, torch.Tensor]],
+    num_epochs: int = 1,
+    lr: float = 5e-4,
+    get_final_token_only: bool = False,
+    log_wandb: bool = False,
+    wandb_project: str = "tuned-lens",
+    wandb_run_name: str | None = None,
+):
+    device = next(model.parameters()).device
+    hidden_size = model.config.hidden_size
+    num_layers = len(list(model.model.layers))
+
+    submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
+    lenses = build_tuned_lenses(num_layers, hidden_size, device, dtype=torch.float32)
+
+    optimizer = torch.optim.AdamW(lenses.parameters(), lr=lr)
+    total_steps = len(train_batched_tokens) * num_epochs
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.0,
+                         total_iters=total_steps)
+
+    # ----- WANDB run init (only if logging is requested) -----
+    if log_wandb:
+        if wandb.run is None:        # avoid creating nested runs
+            wandb.init(
+                project=wandb_project,
+                name=wandb_run_name,
+                config=dict(
+                    lr=lr,
+                    num_epochs=num_epochs,
+                    model_name=model.config._name_or_path,
+                    hidden_size=hidden_size,
+                    layers=num_layers,
+                    final_token_only=get_final_token_only,
+                ),
+            )
+
+    # ---- freeze base model ----
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    step = 0
+    for epoch in range(num_epochs):
+        for batch in tqdm(train_batched_tokens, desc=f"epoch {epoch+1}/{num_epochs}"):
+            # --- base forward (no grad) ---
+            with torch.no_grad():
+                acts_dict, teacher_logits = model_utils.get_activations_per_layer(
+                    model,
+                    submodules,
+                    batch,
+                    get_final_token_only=get_final_token_only,
+                )
+                teacher_logits = teacher_logits.detach()
+
+            # --- tuned-lens forward & per-layer KL ---
+            layer_losses = []
+            loss = 0.0
+            for i, layer in enumerate(submodules):
+                acts = acts_dict[layer].detach()
+                logits_q = apply_logit_lens(acts, model, final_token_only=get_final_token_only, add_final_layer=False, tuned_lens=lenses[i])
+
+                layer_kl = kl_between_logits(
+                    teacher_logits,
+                    logits_q
+                ).mean()
+                layer_losses.append(layer_kl)
+                loss += layer_kl
+
+            loss = loss / num_layers        # mean across layers
+
+            # --- optimise ---
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            step += 1
+
+            # --- logging ---
+            # if step % 10 == 0:
+            #     lr_now = scheduler.get_last_lr()[0]
+            #     print(f"step {step:>6}/{total_steps}  loss {loss.item():.4f}  lr {lr_now:.2e}")
+
+            if log_wandb and step % 10 == 0:
+                log_dict = {
+                    "loss/mean": loss.item(),
+                    "lr": scheduler.get_last_lr()[0],
+                }
+                for i, l_val in enumerate(layer_losses):
+                    log_dict[f"loss/layer_{i}"] = l_val.item()
+                wandb.log(log_dict, step=step)
+
+    return lenses
+
+
+def save_lenses(lenses: torch.nn.ModuleList, model_name: str, out_dir: str = "tuned_lenses"):
+    """
+    Saves all layers’ tuned-lens weights to a single .pt file.
+    """
+    filename = f"{model_name.replace('/', '_')}_tuned_lens.pt"
+    output_path = os.path.join(out_dir, filename)
+    os.makedirs(out_dir, exist_ok=True)
+    torch.save(lenses.state_dict(), output_path)
+
+def load_lenses(model: AutoModelForCausalLM,
+                model_name: str,
+                device: torch.device,
+                dtype=torch.float32,
+                ckpt_dir: str = "tuned_lenses") -> torch.nn.ModuleList:
+    """
+    Rebuilds an empty lens stack and loads weights from disk.
+    """
+    num_layers = len(list(model.model.layers))
+    hidden_size = model.config.hidden_size
+    lenses = build_tuned_lenses(num_layers, hidden_size, device, dtype)
+    ckpt_path = os.path.join(ckpt_dir, f"{model_name.replace('/', '_')}_tuned_lens.pt")
+    lenses.load_state_dict(torch.load(ckpt_path, map_location=device), strict=True)
+    lenses.eval()
+    return lenses
+
+@contextmanager
+def wandb_session(project: str,
+                name: str | None = None,
+                **init_kwargs):
+    """
+    Starts a run if none exists; always `wandb.finish()` on exit.
+    Safe to nest (won’t close an outer run you didn’t create).
+    """
+    import wandb
+    created_run = wandb.run is None          # detect outer scope
+    if created_run:
+        run = wandb.init(project=project, name=name, **init_kwargs)
+    else:
+        run = wandb.run                      # reuse existing one
+    try:
+        yield run                            # code inside the “with” block
+    finally:
+        if created_run:
+            wandb.finish()                   # ensures clean shutdown
+
+if __name__ == "__main__":
+    model_names = ["google/gemma-2-2b-it"]
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.bfloat16
+
+    for model_name in model_names:
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 1
+        context_length = 256
+
+        num_layers = len(list(model.model.layers))
+        submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
+
+        dataset_name = "togethercomputer/RedPajama-Data-V2"
+        num_tokens = 1_000_000
+        num_tokens = 500_000
+
+        batched_tokens = interp_utils.get_batched_tokens(
+            tokenizer=tokenizer,
+            model_name=model_name,
+            dataset_name=dataset_name,
+            num_tokens=num_tokens,
+            batch_size=batch_size,
+            device=device,
+            context_length=context_length,
+            force_rebuild_tokens=False,
+        )
+
+        val_batched_tokens = batched_tokens[:10]
+        train_batched_tokens = batched_tokens[10:]
+
+        val_loss = logit_lens_on_batched_tokens(
+            model,
+            submodules,
+            val_batched_tokens,
+            get_final_token_only=False,
+        )
+
+        print(f"Initial val loss: {val_loss}")
+
+        torch.set_grad_enabled(True)
+
+        with wandb_session(project="tuned_lenses",
+                        name=f"{model_name}_lr5e-4_epoch1"):
+            lenses = train_tuned_lens(
+                model,
+                train_batched_tokens,
+                num_epochs=1,
+                lr=5e-4,
+                get_final_token_only=False,
+                log_wandb=True                      # training loop will just log
+            )
+
+        save_lenses(lenses, model_name)
+
+        lenses = load_lenses(model, model_name, device)
+
+        final_val_loss = logit_lens_on_batched_tokens(
+            model,
+            submodules,
+            val_batched_tokens,
+            get_final_token_only=False,
+            add_final_layer=False,
+            all_tuned_lenses=lenses,
+        )
+        print(f"Final val loss: {final_val_loss}")

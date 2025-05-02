@@ -14,6 +14,7 @@ import wandb
 import os
 from contextlib import contextmanager
 from torch import autocast
+import math
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
@@ -425,6 +426,7 @@ def train_tuned_lens(
     train_batched_tokens: list[dict[str, torch.Tensor]],
     num_epochs: int = 1,
     lr: float = 5e-4,
+    grad_accum_steps: int = 1,
     get_final_token_only: bool = False,
     log_wandb: bool = False,
     wandb_project: str = "tuned-lens",
@@ -438,9 +440,14 @@ def train_tuned_lens(
     lenses = build_tuned_lenses(num_layers, hidden_size, device, dtype=torch.float32)
 
     optimizer = torch.optim.AdamW(lenses.parameters(), lr=lr)
-    total_steps = len(train_batched_tokens) * num_epochs
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.0,
-                         total_iters=total_steps)
+
+    total_optimizer_steps = math.ceil(
+        len(train_batched_tokens) * num_epochs / grad_accum_steps
+    )
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1.0, end_factor=0.0,
+        total_iters=total_optimizer_steps
+    )
 
     # ----- WANDB run init (only if logging is requested) -----
     if log_wandb:
@@ -463,9 +470,13 @@ def train_tuned_lens(
     for p in model.parameters():
         p.requires_grad_(False)
 
-    step = 0
+    step          = 0          # optimiser steps (i.e. after accumulation)
+    micro_step    = 0          # raw batch counter
+    optimizer.zero_grad(set_to_none=True)
+
     for epoch in range(num_epochs):
         for batch in tqdm(train_batched_tokens, desc=f"epoch {epoch+1}/{num_epochs}"):
+            micro_step += 1
             # --- base forward (no grad) ---
             with torch.no_grad():
                 acts_dict, teacher_logits = model_utils.get_activations_per_layer(
@@ -474,7 +485,7 @@ def train_tuned_lens(
                     batch,
                     get_final_token_only=get_final_token_only,
                 )
-                teacher_logits = teacher_logits.detach()
+                teacher_logits = teacher_logits.detach().float()
 
             # --- tuned-lens forward & per-layer KL ---
             layer_losses = []
@@ -490,28 +501,30 @@ def train_tuned_lens(
                 layer_losses.append(layer_kl)
                 loss += layer_kl
 
-            loss = loss / num_layers        # mean across layers
-
-            # --- optimise ---
-            optimizer.zero_grad(set_to_none=True)
+            loss = loss / num_layers
+            loss = loss / grad_accum_steps                # scale for accumulation
             loss.backward()
-            optimizer.step()
-            scheduler.step()
-            step += 1
+
+            # ---------- step optimiser every N micro-batches ----------
+            if micro_step % grad_accum_steps == 0:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                step += 1
 
             # --- logging ---
             # if step % 10 == 0:
             #     lr_now = scheduler.get_last_lr()[0]
             #     print(f"step {step:>6}/{total_steps}  loss {loss.item():.4f}  lr {lr_now:.2e}")
 
-            if log_wandb and step % 10 == 0:
+            if log_wandb and micro_step % 10 == 0:
                 log_dict = {
-                    "loss/mean": loss.item(),
+                    "loss/mean": loss.item() * grad_accum_steps,
                     "lr": scheduler.get_last_lr()[0],
                 }
                 for i, l_val in enumerate(layer_losses):
                     log_dict[f"loss/layer_{i}"] = l_val.item()
-                wandb.log(log_dict, step=step)
+                wandb.log(log_dict, step=micro_step)
 
     return lenses
 
@@ -578,7 +591,7 @@ if __name__ == "__main__":
 
         dataset_name = "togethercomputer/RedPajama-Data-V2"
         num_tokens = 1_000_000
-        num_tokens = 500_000
+        num_tokens = 200_000
 
         batched_tokens = interp_utils.get_batched_tokens(
             tokenizer=tokenizer,

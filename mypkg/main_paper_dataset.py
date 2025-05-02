@@ -85,18 +85,12 @@ def save_evaluation_results(
     df,
     results,
     bias_scores,
-    cache_dir: str,
+    bias_probs,
+    everything_output_filepath: str,
+    # cache_dir: str,
     timestamp: str,
     eval_config: EvalConfig,
 ):
-    """
-    Saves a comprehensive record of this run as a single JSON.
-    Includes:
-      - metadata (timestamp, model_name, arguments)
-      - all prompt/response details
-      - bias summary
-      - any additional summary info (like # of resumes processed, industries, etc.)
-    """
     # Build a big dictionary with all data:
     # 1) Metadata
     evaluation_data = {
@@ -109,7 +103,8 @@ def save_evaluation_results(
         # 2) Full list of results
         "results": [],
         # 3) Bias summary
-        "bias_summary": bias_scores,
+        "bias_scores": bias_scores,
+        "bias_probs": bias_probs,
         # 4) Additional info
         "summary_info": {
             "total_resumes_processed": len(results),
@@ -123,16 +118,10 @@ def save_evaluation_results(
     for item in results:
         evaluation_data["results"].append(asdict(item))
 
-    # Use a filename that includes the timestamp to keep files distinct
-    output_filename = f"evaluation_{timestamp}_{model_name}_{eval_config.anti_bias_statement_file}_{eval_config.job_description_file}.json"
-    output_filename = output_filename.replace(".txt", "").replace("/", "_")
-    output_path = os.path.join(cache_dir, output_filename)
+    with open(everything_output_filepath, "wb") as f:
+        pickle.dump(evaluation_data, f)
 
-    # Write the dictionary to JSON
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(evaluation_data, f, indent=4)
-
-    print(f"\nSaved evaluation data to: {output_path}")
+    print(f"\nSaved evaluation data to: {everything_output_filepath}")
 
 
 def balanced_downsample(df, n_samples, random_seed=42):
@@ -282,7 +271,7 @@ async def main(
 ) -> dict[str, Any]:
     """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --inference_mode gpu_inference
 
-    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
+    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass --political_orientation
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode perform_ablations
 
@@ -355,17 +344,17 @@ async def main(
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
         anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
-        anti_bias_statement_files = ["v11.txt"]
-        anti_bias_statement_files = ["v2.txt"]
+        # anti_bias_statement_files = ["v11.txt"]
+        # anti_bias_statement_files = ["v2.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
     if args.model_name is None:
         model_names = [
             # "google/gemma-2-2b-it",
-            # "google/gemma-2-27b-it",
-            # "google/gemma-2-9b-it",
-            # "mistralai/Ministral-8B-Instruct-2410",
+            "google/gemma-2-27b-it",
+            "google/gemma-2-9b-it",
+            "mistralai/Ministral-8B-Instruct-2410",
             "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
             # "openai/gpt-4o-2024-08-06",
@@ -410,6 +399,8 @@ async def main(
 
     general_bools = [True, False]
     general_bools = [False]
+
+    add_activations = True
 
     # Determine scales and bias_types based on inference_mode
     if (
@@ -471,21 +462,18 @@ async def main(
             else:
                 raise ValueError(f"Unhandled bias type: {bias_type}")
 
-        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}_general_{str(general_bool)}.json".replace(
+        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}_general_{str(general_bool)}.pkl".replace(
             ".txt", ""
         ).replace("/", "_")
-
-        if (
-            args.inference_mode == InferenceMode.LOGIT_LENS.value
-            or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
-        ):
-            temp_results_filename = temp_results_filename.replace(".json", ".pkl")
 
         temp_results_folder = os.path.join(
             args.inference_mode, model_name.replace("/", "_")
         )
         output_dir = os.path.join(args.score_output_dir, temp_results_folder)
         os.makedirs(output_dir, exist_ok=True)
+        everything_output_dir = os.path.join("all_results", temp_results_folder)
+        os.makedirs(everything_output_dir, exist_ok=True)
+        everything_output_filepath = os.path.join(everything_output_dir, temp_results_filename)
 
         file_key = os.path.join(temp_results_folder, temp_results_filename)
         temp_results_filepath = os.path.join(output_dir, temp_results_filename)
@@ -508,7 +496,7 @@ async def main(
         if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
             results = model_inference.run_single_forward_pass_transformers(
-                prompts, model_name, batch_size=batch_size, max_length=MAX_LENGTH
+                prompts, model_name, batch_size=batch_size, max_length=MAX_LENGTH, collect_activations=add_activations
             )
         elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
@@ -627,6 +615,8 @@ async def main(
                 bias_probs = evaluate_bias_probs(results)
                 print("\n\n\n", bias_probs)
                 run_results["bias_probs"] = bias_probs
+            else:
+                bias_probs = None
 
             save_evaluation_results(
                 args,
@@ -634,21 +624,19 @@ async def main(
                 df,
                 results,
                 bias_scores,
-                cache_dir,
+                bias_probs,
+                everything_output_filepath,
                 timestamp,
                 eval_config,
             )
-
-            with open(temp_results_filepath, "w") as f:
-                json.dump(run_results, f)
-
         elif (
             InferenceMode.LOGIT_LENS.value in args.inference_mode
             or InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value in args.inference_mode
         ):
             run_results["logit_lens"] = results
-            with open(temp_results_filepath, "wb") as f:
-                pickle.dump(run_results, f)
+
+        with open(temp_results_filepath, "wb") as f:
+            pickle.dump(run_results, f)
 
         print(f"\nTotal resumes processed: {len(results)}")
         print(f"Industries included: {', '.join(df['Category'].unique())}")

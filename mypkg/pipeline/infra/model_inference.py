@@ -266,6 +266,7 @@ def run_single_forward_pass_transformers(
     model: Optional[AutoModelForCausalLM] = None,
     ablation_type: str = "clamping",
     scale: Optional[float] = None,
+    collect_activations: bool = False,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     assert padding_side in ["left", "right"]
 
@@ -332,16 +333,30 @@ def run_single_forward_pass_transformers(
             handle = submodule.register_forward_hook(ablation_hook)
 
         try:
-            logits = model(**model_inputs).logits
+            if collect_activations:
+                submodules = [model_utils.get_submodule(model, i) for i in range(len(list(model.model.layers)))]
+                activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
+                    model, submodules, model_inputs, get_final_token_only=True
+                )
+
+                for i, idx in enumerate(idx_batch):
+                    acts_LD = {}
+                    for j in range(len(submodules)):
+                        acts_LD[j] = activations_BLD[submodules[j]][i].cpu()
+
+                    prompt_dicts[idx].activations = acts_LD
+            else:
+                logits_BLV = model(**model_inputs).logits
+
             if padding_side == "right":
                 seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
-                answer_logits_BV = logits[
-                    torch.arange(logits.shape[0]),
+                answer_logits_BV = logits_BLV[
+                    torch.arange(logits_BLV.shape[0]),
                     seq_lengths_B,
                     :,
                 ]
             elif padding_side == "left":
-                answer_logits_BV = logits[
+                answer_logits_BV = logits_BLV[
                     :,
                     -1,
                     :,

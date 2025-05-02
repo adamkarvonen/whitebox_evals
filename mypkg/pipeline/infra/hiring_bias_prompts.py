@@ -8,6 +8,7 @@ from typing import Optional, Any
 import json
 import re
 import os
+import torch
 
 from mypkg.eval_config import EvalConfig
 import mypkg.whitebox_infra.model_utils as model_utils
@@ -233,7 +234,7 @@ class ResumePromptResult:
     chat_completion: Optional[dict] = None
     yes_probs: Optional[float] = None
     no_probs: Optional[float] = None
-
+    activations: Optional[torch.Tensor] = None
 
 def create_all_prompts_hiring_bias(
     df: pd.DataFrame, args: dict, eval_config: EvalConfig

@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from dataclasses import asdict
 import wandb
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from torch import autocast
 import math
 
@@ -428,6 +428,7 @@ def train_tuned_lens(
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
     get_final_token_only: bool = False,
+    lens_dtype: torch.dtype = torch.float32,
     log_wandb: bool = False,
     wandb_project: str = "tuned-lens",
     wandb_run_name: str | None = None,
@@ -437,9 +438,9 @@ def train_tuned_lens(
     num_layers = len(list(model.model.layers))
 
     submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
-    lenses = build_tuned_lenses(num_layers, hidden_size, device, dtype=torch.float32)
+    lenses = build_tuned_lenses(num_layers, hidden_size, device, dtype=lens_dtype)
 
-    optimizer = torch.optim.AdamW(lenses.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(lenses.parameters(), lr=lr, weight_decay=0.01)
 
     total_optimizer_steps = math.ceil(
         len(train_batched_tokens) * num_epochs / grad_accum_steps
@@ -489,7 +490,7 @@ def train_tuned_lens(
 
             # --- tuned-lens forward & per-layer KL ---
             layer_losses = []
-            loss = 0.0
+            logging_loss = 0.0
             for i, layer in enumerate(submodules):
                 acts = acts_dict[layer].detach()
                 logits_q = apply_logit_lens(acts, model, final_token_only=get_final_token_only, add_final_layer=False, tuned_lens=lenses[i])
@@ -499,11 +500,12 @@ def train_tuned_lens(
                     logits_q
                 ).mean()
                 layer_losses.append(layer_kl)
-                loss += layer_kl
 
-            loss = loss / num_layers
-            loss = loss / grad_accum_steps                # scale for accumulation
-            loss.backward()
+                loss = layer_kl
+                loss = loss / num_layers
+                loss = loss / grad_accum_steps                # scale for accumulation
+                loss.backward()
+                logging_loss += loss.item()
 
             # ---------- step optimiser every N micro-batches ----------
             if micro_step % grad_accum_steps == 0:
@@ -519,7 +521,7 @@ def train_tuned_lens(
 
             if log_wandb and micro_step % 10 == 0:
                 log_dict = {
-                    "loss/mean": loss.item() * grad_accum_steps,
+                    "loss/mean": logging_loss * grad_accum_steps,
                     "lr": scheduler.get_last_lr()[0],
                 }
                 for i, l_val in enumerate(layer_losses):
@@ -575,23 +577,27 @@ def wandb_session(project: str,
             wandb.finish()                   # ensures clean shutdown
 
 if __name__ == "__main__":
-    model_names = ["google/gemma-2-2b-it"]
+    model_names = ["google/gemma-2-27b-it"]
+    # model_names = ["google/gemma-2-2b-it"]
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16
+    lens_dtype = torch.float32
+
+    use_wandb = True
 
     for model_name in model_names:
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 1
-        context_length = 256
+        batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 2
+        context_length = 512
 
         num_layers = len(list(model.model.layers))
         submodules = [model_utils.get_submodule(model, i) for i in range(num_layers)]
 
         dataset_name = "togethercomputer/RedPajama-Data-V2"
         num_tokens = 1_000_000
-        num_tokens = 200_000
+        # num_tokens = 200_000
 
         batched_tokens = interp_utils.get_batched_tokens(
             tokenizer=tokenizer,
@@ -618,20 +624,27 @@ if __name__ == "__main__":
 
         torch.set_grad_enabled(True)
 
-        with wandb_session(project="tuned_lenses",
-                        name=f"{model_name}_lr5e-4_epoch1"):
+        if use_wandb:
+            logging_context = wandb_session(project="tuned_lenses",
+                        name=f"{model_name}_lr5e-4_epoch1")
+        else:
+            logging_context = nullcontext()
+
+        with logging_context:
             lenses = train_tuned_lens(
                 model,
                 train_batched_tokens,
                 num_epochs=1,
                 lr=5e-4,
                 get_final_token_only=False,
-                log_wandb=True                      # training loop will just log
+                lens_dtype=lens_dtype,
+                log_wandb=use_wandb                    # training loop will just log
             )
 
         save_lenses(lenses, model_name)
 
-        lenses = load_lenses(model, model_name, device)
+        # inference in bfloat16
+        lenses = load_lenses(model, model_name, device, dtype=dtype)
 
         final_val_loss = logit_lens_on_batched_tokens(
             model,

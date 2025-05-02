@@ -402,7 +402,7 @@ def collect_activations(
 
     return activations_BLD
 
-
+@torch.no_grad()
 def get_activations_per_layer(
     model: AutoModelForCausalLM,
     submodules: list[torch.nn.Module],

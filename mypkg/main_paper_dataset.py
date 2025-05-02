@@ -356,16 +356,17 @@ async def main(
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
         anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
         anti_bias_statement_files = ["v11.txt"]
+        anti_bias_statement_files = ["v2.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
     if args.model_name is None:
         model_names = [
             # "google/gemma-2-2b-it",
-            "google/gemma-2-27b-it",
+            # "google/gemma-2-27b-it",
             # "google/gemma-2-9b-it",
             # "mistralai/Ministral-8B-Instruct-2410",
-            # "mistralai/Mistral-Small-24B-Instruct-2501",
+            "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
             # "openai/gpt-4o-2024-08-06",
             # "deepseek/deepseek-r1-distill-llama-70b"
@@ -408,14 +409,14 @@ async def main(
         vllm_model = vllm.LLM(model=model_names[0], dtype="bfloat16")
 
     general_bools = [True, False]
-    # general_bools = [False]
+    general_bools = [False]
 
     # Determine scales and bias_types based on inference_mode
     if (
         args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
         or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
     ):
-        scales = [5.0]
+        scales = [1.0, 2.0, 5.0]
         bias_types = ["political_orientation", "gender", "race"]
 
         # override bias_types and scales if provided
@@ -552,6 +553,7 @@ async def main(
                 add_final_layer=general_bool,
                 batch_size=batch_size,
                 max_length=MAX_LENGTH,
+                use_tuned_lenses=True,
             )
         elif args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value:
             batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
@@ -581,6 +583,7 @@ async def main(
                 ablation_features=ablation_features,
                 ablation_type=intervention_type,
                 scale=scale,
+                use_tuned_lenses=True,
             )
         elif args.inference_mode == InferenceMode.OPEN_ROUTER.value:
             # Use the lookup table if the model name is present

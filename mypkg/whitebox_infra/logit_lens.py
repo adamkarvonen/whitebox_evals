@@ -183,7 +183,7 @@ def run_logit_lens(
 
     if use_tuned_lenses:
         assert add_final_layer is False, "Cannot add final layer if tuned_lenses are used"
-        tuned_lenses = load_lenses(model, model_name, device)
+        tuned_lenses = load_lenses(model, model_name, device, dtype=dtype)
     else:
         tuned_lenses = [None] * num_layers
 
@@ -289,7 +289,7 @@ def run_logit_lens_with_intervention(
 
     if use_tuned_lenses:
         assert add_final_layer is False, "Cannot add final layer if tuned_lenses are used"
-        tuned_lenses = load_lenses(model, model_name, device)
+        tuned_lenses = load_lenses(model, model_name, device, dtype=dtype)
     else:
         tuned_lenses = [None] * num_layers
 
@@ -577,8 +577,9 @@ def wandb_session(project: str,
             wandb.finish()                   # ensures clean shutdown
 
 if __name__ == "__main__":
-    model_names = ["google/gemma-2-27b-it"]
-    # model_names = ["google/gemma-2-2b-it"]
+    # model_names = ["google/gemma-2-27b-it"]
+    # model_names = ["mistralai/Mistral-Small-24B-Instruct-2501"]
+    model_names = ["google/gemma-2-2b-it", "google/gemma-2-9b-it", "mistralai/Ministral-8B-Instruct-2410"]
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16

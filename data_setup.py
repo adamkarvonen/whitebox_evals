@@ -53,6 +53,16 @@ def download_cached_responses():
     print("Unzipped attribution_results_data.zip")
 
 
+def download_tuned_lenses():
+    repo_id = "adamkarvonen/sae_max_acts"
+    local_dir = "tuned_lenses"
+    filename = "google_gemma-2-27b-it_tuned_lens.pt"
+
+    hf_hub_download(
+        repo_id=repo_id, repo_type="dataset", filename=filename, local_dir=local_dir
+    )
+
+
 if __name__ == "__main__":
     setup_data()
     download_cached_responses()

@@ -402,6 +402,7 @@ def collect_activations(
 
     return activations_BLD
 
+
 @torch.no_grad()
 def get_activations_per_layer(
     model: AutoModelForCausalLM,
@@ -439,3 +440,48 @@ def get_activations_per_layer(
             handle.remove()
 
     return activations_BLD, logits_BLV
+
+
+def truncate_model(model: AutoModelForCausalLM, layer: int):
+    """From tilde-research/activault
+    https://github.com/tilde-research/activault/blob/db6d1e4e36c2d3eb4fdce79e72be94f387eccee1/pipeline/setup.py#L74
+    This provides significant memory savings by deleting all layers that aren't needed for the given layer.
+    You should probably test this before using it"""
+    import gc
+
+    total_params_before = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters before truncation: {total_params_before:,}")
+
+    if (
+        model.config.architectures[0] == "Qwen2ForCausalLM"
+        or model.config.architectures[0] == "Gemma2ForCausalLM"
+    ):
+        removed_layers = model.model.layers[layer + 1 :]
+
+        model.model.layers = model.model.layers[: layer + 1]
+
+        del removed_layers
+        del model.lm_head
+
+        model.lm_head = torch.nn.Identity()
+
+    elif model.config.architectures[0] == "GPTNeoXForCausalLM":
+        removed_layers = model.gpt_neox.layers[layer + 1 :]
+
+        model.gpt_neox.layers = model.gpt_neox.layers[: layer + 1]
+
+        del removed_layers
+        del model.embed_out
+
+        model.embed_out = torch.nn.Identity()
+
+    else:
+        raise ValueError(f"Please add truncation for model {model.name_or_path}")
+
+    total_params_after = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters after truncation: {total_params_after:,}")
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return model

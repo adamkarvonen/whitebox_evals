@@ -11,6 +11,8 @@ import pickle
 import gc
 import pandas as pd
 import matplotlib.pyplot as plt
+import itertools
+from datasets import load_dataset
 
 import mypkg.whitebox_infra.attribution as attribution
 import mypkg.whitebox_infra.dictionaries.batch_topk_sae as batch_topk_sae
@@ -37,6 +39,97 @@ def create_paired_resumes(resumes: list[str]) -> list[str]:
         new_resumes.append(resume2)
 
     return new_resumes
+
+
+def load_anthropic_datasets(dataset_type="implicit", downsample_to=None):
+    print("Loading dataset...")
+
+    print(f"Loading Anthropic dataset ({dataset_type})...")
+    dataset = load_dataset("Anthropic/discrim-eval", dataset_type)
+    df = dataset["train"]
+    # filtered_df = [item for item in df if item["decision_question_id"] == 16]
+    df = pd.DataFrame(df)
+
+    return df
+
+
+def contrastive_gender_pairs(df: pd.DataFrame) -> list[str]:
+    key_cols = ["decision_question_id", "race", "fill_type", "age"]
+
+    pairs: list[str] = []
+
+    # Group by the invariant fields
+    for _, group in df.groupby(key_cols):
+        # If the group has fewer than 2 distinct genders, nothing to pair
+        if group["gender"].nunique() < 2:
+            continue
+
+        # Iterate over all index pairs whose genders differ
+        for i, j in itertools.combinations(group.index, 2):
+            if group.at[i, "gender"] != group.at[j, "gender"]:
+                pairs.append(group.at[i, "filled_template"])
+                pairs.append(group.at[j, "filled_template"])
+
+    return pairs
+
+
+def get_split_dataloaders(
+    batch_size: int, downsample: int, train_ratio: float = 0.8, random_seed: int = 42
+) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    anthropic_df = load_anthropic_datasets()
+    train_pairs = contrastive_gender_pairs(anthropic_df)
+    train_labels = [0, 1] * (len(train_pairs) // 2)
+    train_prompts = [""] * len(train_pairs)
+
+    resume_df = dataset_setup.load_raw_dataset()
+
+    industry = "INFORMATION-TECHNOLOGY"
+    resume_df = dataset_setup.filter_by_industry(resume_df, industry)
+
+    resume_df = dataset_setup.balanced_downsample(resume_df, downsample, random_seed)
+
+    unique_resumes = list(resume_df["Resume_str"].unique())
+
+    paired_resumes = create_paired_resumes(unique_resumes)
+
+    all_labels = [0, 1] * len(unique_resumes)
+    all_prompts = [""] * len(paired_resumes)
+
+    test_resumes = paired_resumes
+    test_labels = all_labels
+    test_prompts = all_prompts
+
+    # train_resumes = paired_resumes[:train_size]
+    # train_labels = all_labels[:train_size]
+    # train_prompts = all_prompts[:train_size]
+
+    # test_resumes = paired_resumes[train_size:]
+    # test_labels = all_labels[train_size:]
+    # test_prompts = all_prompts[train_size:]
+
+    train_dataloader = data_utils.create_simple_dataloader(
+        train_pairs,
+        train_labels,
+        train_prompts,
+        model_name,
+        device,
+        batch_size=batch_size,
+        sort_by_length=False,
+        max_length=2500,
+    )
+
+    test_dataloader = data_utils.create_simple_dataloader(
+        test_resumes,
+        test_labels,
+        test_prompts,
+        model_name,
+        device,
+        batch_size=batch_size,
+        sort_by_length=False,
+        max_length=2500,
+    )
+
+    return train_dataloader, test_dataloader
 
 
 def get_dataloaders(

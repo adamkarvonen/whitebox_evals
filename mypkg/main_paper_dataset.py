@@ -338,8 +338,10 @@ async def main(
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    # job_descriptions = ["meta_job_description.txt", "short_meta_job_description.txt"]
-    job_descriptions = ["short_meta_job_description.txt"]
+    job_descriptions = ["meta_job_description.txt", "base_description.txt"]
+    # job_descriptions = ["gm_job_description.txt"]
+    # job_descriptions = ["meta_job_description.txt"]
+    # job_descriptions = ["short_meta_job_description.txt"]
 
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
@@ -424,16 +426,16 @@ async def main(
     all_results = {}
 
     for (
+        anti_bias_statement_file,
         job_description,
         model_name,
-        anti_bias_statement_file,
         scale,
         bias_type,
         general_bool,
     ) in itertools.product(
+        anti_bias_statement_files,
         job_descriptions,
         model_names,
-        anti_bias_statement_files,
         scales,
         bias_types,
         general_bools,

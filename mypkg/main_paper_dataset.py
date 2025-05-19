@@ -9,6 +9,7 @@ from tqdm import tqdm
 import sys
 import os
 from datetime import datetime
+from transformers import AutoTokenizer
 from tabulate import tabulate
 import asyncio
 import json
@@ -217,6 +218,12 @@ def parse_args():
         help="System prompt filename to use",
     )
     parser.add_argument(
+        "--job_description_file",
+        type=str,
+        default=None,
+        help="Path to a single job description file; We only use this job description.",
+    )
+    parser.add_argument(
         "--inference_mode",
         type=str,
         choices=[mode.value for mode in InferenceMode],
@@ -338,26 +345,29 @@ async def main(
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    job_descriptions = ["meta_job_description.txt", "base_description.txt"]
-    # job_descriptions = ["gm_job_description.txt"]
-    # job_descriptions = ["meta_job_description.txt"]
-    # job_descriptions = ["short_meta_job_description.txt"]
+    if args.job_description_file is not None:
+        job_descriptions = [args.job_description_file]
+    else:
+        job_descriptions = ["meta_job_description.txt", "base_description.txt"]
+        # job_descriptions = ["gm_job_description.txt"]
+        # job_descriptions = ["meta_job_description.txt"]
+        job_descriptions = ["short_meta_job_description.txt"]
 
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
-        anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
+        # anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
         # anti_bias_statement_files = ["v11.txt"]
-        # anti_bias_statement_files = ["v2.txt"]
+        anti_bias_statement_files = ["v0.txt", "v2.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
     if args.model_name is None:
         model_names = [
-            # "google/gemma-2-2b-it",
-            "google/gemma-2-27b-it",
-            "google/gemma-2-9b-it",
-            "mistralai/Ministral-8B-Instruct-2410",
-            "mistralai/Mistral-Small-24B-Instruct-2501",
+            "google/gemma-2-2b-it",
+            # "google/gemma-2-27b-it",
+            # "google/gemma-2-9b-it",
+            # "mistralai/Ministral-8B-Instruct-2410",
+            # "mistralai/Mistral-Small-24B-Instruct-2501",
             # "deepseek/deepseek-r1",
             # "openai/gpt-4o-2024-08-06",
             # "deepseek/deepseek-r1-distill-llama-70b"
@@ -385,6 +395,7 @@ async def main(
         max_completion_tokens = 5
 
     MAX_LENGTH = 2500
+    BATCH_SIZE_MULTIPLIER = 2
 
     if model_names[0] in REASONING_MODELS:
         assert len(model_names) == 1
@@ -410,7 +421,9 @@ async def main(
         or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
     ):
         scales = [1.0, 2.0, 5.0]
+        scales = [0.0]
         bias_types = ["political_orientation", "gender", "race"]
+        bias_types = ["gender", "race"]
 
         # override bias_types and scales if provided
         if args.bias_type is not None:
@@ -418,7 +431,7 @@ async def main(
         if args.scale is not None:
             scales = [args.scale]
 
-        intervention_type = "adaptive_clamping"
+        intervention_type = "clamping"
     else:
         scales = [0.0]
         bias_types = ["N/A"]
@@ -451,6 +464,16 @@ async def main(
         print(f"Running with scale: {scale}")
         print(f"Running with bias type: {bias_type}")
 
+        with open(f"prompts/job_descriptions/{job_description}", "r") as f:
+            job_description_text = f.read()
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        job_description_length = len(tokenizer.encode(job_description_text))
+        print(f"Job description length: {job_description_length}")
+
+        total_max_length = MAX_LENGTH + job_description_length
+        print(f"Total max length: {total_max_length}")
+
         if (
             args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
             or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
@@ -475,7 +498,9 @@ async def main(
         os.makedirs(output_dir, exist_ok=True)
         everything_output_dir = os.path.join("all_results", temp_results_folder)
         os.makedirs(everything_output_dir, exist_ok=True)
-        everything_output_filepath = os.path.join(everything_output_dir, temp_results_filename)
+        everything_output_filepath = os.path.join(
+            everything_output_dir, temp_results_filename
+        )
 
         file_key = os.path.join(temp_results_folder, temp_results_filename)
         temp_results_filepath = os.path.join(output_dir, temp_results_filename)
@@ -496,19 +521,36 @@ async def main(
         torch.cuda.empty_cache()
 
         if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * BATCH_SIZE_MULTIPLIER
+            )
             results = model_inference.run_single_forward_pass_transformers(
-                prompts, model_name, batch_size=batch_size, max_length=MAX_LENGTH, collect_activations=add_activations
+                prompts,
+                model_name,
+                batch_size=batch_size,
+                max_length=total_max_length,
+                collect_activations=add_activations,
             )
         elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * BATCH_SIZE_MULTIPLIER
+            )
 
-            ablation_features = intervention_hooks.lookup_sae_features(
+            # ablation_features = intervention_hooks.lookup_sae_features(
+            #     model_name,
+            #     model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
+            #     25,
+            #     anti_bias_statement_file,
+            #     bias_type,
+            # )
+
+            ablation_features = model_inference.get_ablation_features(
                 model_name,
-                model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
-                25,
-                anti_bias_statement_file,
                 bias_type,
+                batch_size=batch_size,
+                max_length=total_max_length,
             )
 
             print(ablation_features)
@@ -526,7 +568,7 @@ async def main(
                 ablation_features=ablation_features,
                 ablation_type=intervention_type,
                 scale=scale,
-                max_length=MAX_LENGTH,
+                max_length=total_max_length,
             )
         elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
@@ -536,17 +578,23 @@ async def main(
                 model=vllm_model,
             )
         elif args.inference_mode == InferenceMode.LOGIT_LENS.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * BATCH_SIZE_MULTIPLIER
+            )
             results = logit_lens.run_logit_lens(
                 prompts,
                 model_name,
                 add_final_layer=general_bool,
                 batch_size=batch_size,
-                max_length=MAX_LENGTH,
+                max_length=total_max_length,
                 use_tuned_lenses=True,
             )
         elif args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value:
-            batch_size = model_utils.MODEL_CONFIGS[model_name]["batch_size"] * 3
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * BATCH_SIZE_MULTIPLIER
+            )
 
             ablation_features = intervention_hooks.lookup_sae_features(
                 model_name,
@@ -569,7 +617,7 @@ async def main(
                 model_name,
                 add_final_layer=general_bool,
                 batch_size=batch_size,
-                max_length=MAX_LENGTH,
+                max_length=total_max_length,
                 ablation_features=ablation_features,
                 ablation_type=intervention_type,
                 scale=scale,

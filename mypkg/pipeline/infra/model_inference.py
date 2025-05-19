@@ -13,12 +13,16 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 import einops
+import argparse
+from torch.utils.data import DataLoader
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.data_utils as data_utils
 from mypkg.whitebox_infra.dictionaries import base_sae
 import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
+from mypkg.eval_config import EvalConfig
+import mypkg.pipeline.setup.dataset as dataset_setup
 
 
 async def openrouter_request(
@@ -284,6 +288,7 @@ def run_single_forward_pass_transformers(
     original_prompts = [p.prompt for p in prompt_dicts]
 
     formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
+
     dataloader = data_utils.create_simple_dataloader(
         formatted_prompts,
         [0] * len(formatted_prompts),
@@ -334,7 +339,10 @@ def run_single_forward_pass_transformers(
 
         try:
             if collect_activations:
-                submodules = [model_utils.get_submodule(model, i) for i in range(len(list(model.model.layers)))]
+                submodules = [
+                    model_utils.get_submodule(model, i)
+                    for i in range(len(list(model.model.layers)))
+                ]
                 activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
                     model, submodules, model_inputs, get_final_token_only=True
                 )
@@ -376,3 +384,213 @@ def run_single_forward_pass_transformers(
                 handle.remove()
 
     return prompt_dicts
+
+
+@torch.no_grad()
+def compute_activations(
+    transformers_model: AutoModelForCausalLM,
+    sae: base_sae.BaseSAE,
+    model_inputs: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    chosen_layers: list[int],
+    submodules: list[torch.nn.Module],
+    verbose: bool = False,
+    ignore_bos: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    assert len(chosen_layers) == 1, "Only one layer is supported for now."
+
+    layer_acts_BLD = model_utils.collect_activations(
+        transformers_model,
+        submodules[0],
+        model_inputs,
+    )
+
+    encoded_acts_BLF = sae.encode(layer_acts_BLD)
+
+    encoded_acts_BLF *= model_inputs["attention_mask"][:, :, None]
+
+    # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+
+    pos_mask_B = labels == 1
+    neg_mask_B = labels == 0
+
+    pos_acts_BLF = encoded_acts_BLF[pos_mask_B]
+    neg_acts_BLF = encoded_acts_BLF[neg_mask_B]
+
+    pos_acts_F = einops.reduce(
+        pos_acts_BLF.to(dtype=torch.float32), "b l f -> f", "mean"
+    )
+    neg_acts_F = einops.reduce(
+        neg_acts_BLF.to(dtype=torch.float32), "b l f -> f", "mean"
+    )
+
+    if pos_mask_B.sum().item() == 0:
+        assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
+        pos_acts_F = torch.zeros_like(neg_acts_F)
+    if neg_mask_B.sum().item() == 0:
+        assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
+        neg_acts_F = torch.zeros_like(pos_acts_F)
+
+    diff_acts_F = pos_acts_F - neg_acts_F
+
+    return diff_acts_F, pos_acts_F, neg_acts_F
+
+
+def get_sae_activations(
+    model: AutoModelForCausalLM,
+    sae: base_sae.BaseSAE,
+    dataloader: DataLoader,
+    submodules: list[torch.nn.Module],
+    chosen_layers: list[int],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device, dtype=torch.float32)
+    pos_acts_F = torch.zeros_like(effects_F)
+    neg_acts_F = torch.zeros_like(effects_F)
+
+    for batch in tqdm(dataloader):
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
+
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        batch_diff_acts_F, batch_pos_acts_F, batch_neg_acts_F = compute_activations(
+            model,
+            sae,
+            model_inputs,
+            labels,
+            chosen_layers,
+            submodules,
+            verbose=False,
+        )
+
+        effects_F += batch_diff_acts_F.to(torch.float32)
+        pos_acts_F += batch_pos_acts_F.to(torch.float32)
+        neg_acts_F += batch_neg_acts_F.to(torch.float32)
+
+    effects_F /= len(dataloader)
+    pos_acts_F /= int(len(dataloader) * 0.5)
+    neg_acts_F /= int(len(dataloader) * 0.5)
+
+    return effects_F, pos_acts_F, neg_acts_F
+
+
+def get_ablation_features(
+    model_name: str,
+    bias_type: str,
+    batch_size: int = 64,
+    padding_side: str = "left",
+    max_length: int = 8192,
+    model: Optional[AutoModelForCausalLM] = None,
+) -> list[hiring_bias_prompts.ResumePromptResult]:
+    assert padding_side in ["left", "right"]
+    assert bias_type in ["gender", "race", "political_orientation"]
+
+    trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
+
+    layer_percent = 25
+    downsample = 150
+
+    ablation_features_dir = "ablation_features"
+    os.makedirs(ablation_features_dir, exist_ok=True)
+    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{trainer_id}_{downsample}.pt".replace(
+        "/", "_"
+    )
+    filename = os.path.join(ablation_features_dir, filename)
+    if os.path.exists(filename):
+        diff_acts_F, pos_acts_F, neg_acts_F = torch.load(filename)
+    else:
+        print("Computing ablation features")
+        dtype = torch.bfloat16
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if model is None:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                device_map="auto",
+                # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
+            )
+        # tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        eval_config = EvalConfig(
+            model_name=model_name,
+            political_orientation=bias_type == "political_orientation",
+            pregnancy=False,
+            employment_gap=False,
+            anthropic_dataset=False,
+            downsample=downsample,
+            inference_mode="gpu_forward_pass",
+            anti_bias_statement_file="v2.txt",
+            job_description_file="base_description.txt",
+            system_prompt_filename="yes_no.txt",
+        )
+
+        args = hiring_bias_prompts.HiringBiasArgs(
+            political_orientation=bias_type == "political_orientation",
+            employment_gap=bias_type == "employment_gap",
+            pregnancy=bias_type == "pregnancy",
+            race=bias_type == "race",
+            gender=bias_type == "gender",
+            misc=bias_type == "misc",
+        )
+
+        df = dataset_setup.load_raw_dataset()
+        if eval_config.downsample:
+            df = dataset_setup.balanced_downsample(
+                df,
+                eval_config.downsample,
+                eval_config.random_seed,
+            )
+
+        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
+            df, args, eval_config
+        )
+
+        train_texts, train_labels, train_resume_prompt_results = (
+            hiring_bias_prompts.process_hiring_bias_resumes_prompts(
+                prompts, model_name, args
+            )
+        )
+
+        dataloader = data_utils.create_simple_dataloader(
+            train_texts,
+            train_labels,
+            train_resume_prompt_results,
+            model_name,
+            device,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+
+        sae = model_utils.load_model_sae(
+            model_name, device, dtype, layer_percent, trainer_id=trainer_id
+        )
+
+        chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
+            layer_percent
+        ]["layer"]
+
+        submodules = [model_utils.get_submodule(model, chosen_layer)]
+
+        diff_acts_F, pos_acts_F, neg_acts_F = get_sae_activations(
+            model, sae, dataloader, submodules, [chosen_layer], device
+        )
+
+        torch.save((diff_acts_F, pos_acts_F, neg_acts_F), filename)
+
+    acts_top_k_ids = diff_acts_F.abs().topk(100).indices
+
+    # set torch print sci mode false
+    # torch.set_printoptions(sci_mode=False)
+
+    ratios = pos_acts_F[acts_top_k_ids] / (neg_acts_F[acts_top_k_ids] + 1e-10)
+
+    mask = (ratios > 2.0) | (ratios < 0.5)
+
+    selected_ids = acts_top_k_ids[mask]
+
+    return selected_ids

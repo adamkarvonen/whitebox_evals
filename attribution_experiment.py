@@ -88,7 +88,7 @@ def main(
         downsample=args.downsample,
         inference_mode="gpu_forward_pass",
         anti_bias_statement_file=args.anti_bias_statement_file,
-        job_description_file="short_meta_job_description.txt",
+        job_description_file="base_description.txt",
         system_prompt_filename="yes_no.txt",
     )
 

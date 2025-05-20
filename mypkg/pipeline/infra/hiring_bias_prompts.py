@@ -335,7 +335,7 @@ def create_all_prompts_anthropic(
     df: pd.DataFrame,
     args: dict,
     eval_config: EvalConfig,
-    add_system_prompt: bool = False,
+    add_system_prompt: bool = True,
 ) -> list[ResumePromptResult]:
     """Adapted from here: https://anonymous.4open.science/r/LLMResumeBiasAnalysis-21F2/classification_full_text.py"""
     results = []
@@ -455,7 +455,10 @@ def evaluate_bias(
                 return max(1, min(10, score))
             else:
                 return None
-        elif system_prompt_filename == "yes_no.txt":
+        elif (
+            system_prompt_filename == "yes_no.txt"
+            or system_prompt_filename == "yes_no_anthropic.txt"
+        ):
             # Original Yes/No logic
             if "yes" in resp_stripped and "no" in resp_stripped:
                 return None

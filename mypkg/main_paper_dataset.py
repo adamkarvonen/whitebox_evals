@@ -25,12 +25,7 @@ from enum import Enum
 import pickle
 
 from mypkg.eval_config import EvalConfig
-from mypkg.pipeline.setup.dataset import (
-    load_raw_dataset,
-    filter_by_industry,
-    filter_by_demographics,
-    prepare_dataset_for_model,
-)
+import mypkg.pipeline.setup.dataset as dataset_setup
 from mypkg.pipeline.infra.hiring_bias_prompts import (
     create_all_prompts_hiring_bias,
     create_all_prompts_anthropic,
@@ -110,7 +105,6 @@ def save_evaluation_results(
         # 4) Additional info
         "summary_info": {
             "total_resumes_processed": len(results),
-            "industries_included": list(df["Category"].unique()),
         },
         "eval_config": asdict(eval_config),
     }
@@ -287,7 +281,9 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens_with_intervention
 
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt"""
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt
+
+    python mypkg/main_paper_dataset.py --inference_mode gpu_forward_pass --overwrite_existing_results --anthropic_dataset"""
     os.makedirs(cache_dir, exist_ok=True)
 
     start_time = time.time()
@@ -297,22 +293,8 @@ async def main(
             "Only one of political orientation, pregnancy, or employment gap can be true"
         )
 
-    print("Loading dataset...")
-    if args.anthropic_dataset:
-        # TODO: Experiment with explicit vs implicit
-        dataset = load_dataset("Anthropic/discrim-eval", "explicit")
-        # dataset = load_dataset("Anthropic/discrim-eval", "implicit")
-        df = dataset["train"]
-        df = filter_anthropic_df(df)
-        df = modify_anthropic_filled_templates(df)
-    else:
-        df = load_raw_dataset()
-
-        if args.industry:
-            print(f"Filtering for industry: {args.industry}")
-            df = filter_by_industry(df, args.industry)
-        else:
-            print("No industry filter applied.")
+    MAX_LENGTH = 2500
+    BATCH_SIZE_MULTIPLIER = 2
 
     eval_config = EvalConfig(
         inference_mode=args.inference_mode,
@@ -333,11 +315,25 @@ async def main(
     random.seed(random_seed)
     torch.manual_seed(random_seed)
 
-    if args.downsample is not None:
-        if args.anthropic_dataset:
-            print("\n\n\n\nDownsampling Anthropic dataset is not supported\n\n\n")
+    print("Loading dataset...")
+    if eval_config.anthropic_dataset:
+        df = dataset_setup.load_full_anthropic_dataset()
+        args.system_prompt_filename = "yes_no_anthropic.txt"
+        eval_config.system_prompt_filename = "yes_no_anthropic.txt"
+        BATCH_SIZE_MULTIPLIER *= 4
+    else:
+        df = dataset_setup.load_raw_dataset()
+
+        if eval_config.industry:
+            print(f"Filtering for industry: {eval_config.industry}")
+            df = dataset_setup.filter_by_industry(df, eval_config.industry)
         else:
-            df = balanced_downsample(df, args.downsample, eval_config.random_seed)
+            print("No industry filter applied.")
+
+        if eval_config.downsample is not None:
+            df = balanced_downsample(
+                df, eval_config.downsample, eval_config.random_seed
+            )
 
     # Print demographic distribution before sampling
     print("\n[FULL DATASET:] Demographic distribution:")
@@ -394,9 +390,6 @@ async def main(
         max_completion_tokens = 200
     else:
         max_completion_tokens = 5
-
-    MAX_LENGTH = 2500
-    BATCH_SIZE_MULTIPLIER = 2
 
     if model_names[0] in REASONING_MODELS:
         assert len(model_names) == 1
@@ -516,7 +509,9 @@ async def main(
             continue
 
         if args.anthropic_dataset:
-            prompts = create_all_prompts_anthropic(df, args, eval_config)
+            prompts = create_all_prompts_anthropic(
+                df, args, eval_config, add_system_prompt=True
+            )
         else:
             prompts = create_all_prompts_hiring_bias(df, args, eval_config)
 
@@ -714,7 +709,6 @@ async def main(
             pickle.dump(run_results, f)
 
         print(f"\nTotal resumes processed: {len(results)}")
-        print(f"Industries included: {', '.join(df['Category'].unique())}")
 
         all_results[file_key] = run_results
 

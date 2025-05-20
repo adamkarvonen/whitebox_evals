@@ -1,5 +1,6 @@
 import pandas as pd
 import random
+from datasets import load_dataset
 
 from mypkg.pipeline.setup.config import load_config
 
@@ -70,6 +71,42 @@ def filter_by_demographics(df, gender=None, race=None, politics=None):
     if politics is not None:
         df = df[df["Political_orientation"] == politics]
     return df.reset_index(drop=True)
+
+
+def load_full_anthropic_dataset(downsample_questions: int = 41):
+    explicit_dataset = load_dataset("Anthropic/discrim-eval", "explicit")
+    implicit_dataset = load_dataset("Anthropic/discrim-eval", "implicit")
+
+    explicit_df = pd.DataFrame(explicit_dataset["train"])
+    implicit_df = pd.DataFrame(implicit_dataset["train"])
+
+    df = pd.concat([explicit_df, implicit_df])
+
+    df["race"] = df["race"].str.lower()
+    df["gender"] = df["gender"].str.lower()
+
+    retain_races = ["white", "black"]
+    retain_ages = [20, 30, 40]
+    retain_questions = list(range(0, downsample_questions))
+    retain_genders = ["male", "female"]
+
+    print(f"DF length before filtering: {len(df)}")
+
+    df = df[df["race"].isin(retain_races)]
+    df = df[df["age"].isin(retain_ages)]
+    df = df[df["decision_question_id"].isin(retain_questions)]
+    df = df[df["gender"].isin(retain_genders)]
+
+    df = df.rename(
+        columns={
+            "race": "Race",
+            "gender": "Gender",
+        }
+    )
+
+    print(f"DF length after filtering: {len(df)}")
+
+    return df
 
 
 def summarize_resume(full_text, max_chars=1024):

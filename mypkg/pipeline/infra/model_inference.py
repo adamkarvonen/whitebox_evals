@@ -519,9 +519,14 @@ def get_ablation_features(
     layer_percent = 25
     downsample = 150
 
+    dataset_name = "resumes"
+    dataset_name = "anthropic"
+
+    assert dataset_name in ["resumes", "anthropic"]
+
     ablation_features_dir = "ablation_features"
     os.makedirs(ablation_features_dir, exist_ok=True)
-    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{trainer_id}_{downsample}.pt".replace(
+    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{dataset_name}_{trainer_id}_{downsample}.pt".replace(
         "/", "_"
     )
     filename = os.path.join(ablation_features_dir, filename)
@@ -574,10 +579,39 @@ def get_ablation_features(
             df, args, eval_config
         )
 
+        if dataset_name == "resumes":
+            df = dataset_setup.load_raw_dataset()
+            if eval_config.downsample:
+                df = dataset_setup.balanced_downsample(
+                    df,
+                    eval_config.downsample,
+                    eval_config.random_seed,
+                )
+            prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
+                df, args, eval_config
+            )
+        elif dataset_name == "anthropic":
+            df = dataset_setup.load_full_anthropic_dataset()
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
+                df, args, eval_config
+            )
+
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
                 prompts, model_name, args
             )
+        )
+
+        # Assert train_labels only contains 0s and 1s
+        assert all(label in [0, 1] for label in train_labels), (
+            "train_labels contains values other than 0 and 1"
+        )
+
+        # Assert number of 0s equals number of 1s
+        num_zeros = sum(1 for label in train_labels if label == 0)
+        num_ones = sum(1 for label in train_labels if label == 1)
+        assert num_zeros == num_ones, (
+            f"train_labels is not balanced: {num_zeros} zeros vs {num_ones} ones"
         )
 
         dataloader = data_utils.create_simple_dataloader(
@@ -729,13 +763,18 @@ def get_ablation_vectors(
     layer_percent = 25
     downsample = 150
 
+    dataset_name = "resumes"
+    dataset_name = "anthropic"
+
+    assert dataset_name in ["resumes", "anthropic"]
+
     chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
         layer_percent
     ]["layer"]
 
     ablation_features_dir = "ablation_vectors"
     os.makedirs(ablation_features_dir, exist_ok=True)
-    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{downsample}.pt".replace(
+    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{dataset_name}_{downsample}.pt".replace(
         "/", "_"
     )
     filename = os.path.join(ablation_features_dir, filename)
@@ -776,22 +815,39 @@ def get_ablation_vectors(
             misc=bias_type == "misc",
         )
 
-        df = dataset_setup.load_raw_dataset()
-        if eval_config.downsample:
-            df = dataset_setup.balanced_downsample(
-                df,
-                eval_config.downsample,
-                eval_config.random_seed,
+        if dataset_name == "resumes":
+            df = dataset_setup.load_raw_dataset()
+            if eval_config.downsample:
+                df = dataset_setup.balanced_downsample(
+                    df,
+                    eval_config.downsample,
+                    eval_config.random_seed,
+                )
+            prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
+                df, args, eval_config
             )
-
-        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-            df, args, eval_config
-        )
+        elif dataset_name == "anthropic":
+            df = dataset_setup.load_full_anthropic_dataset()
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
+                df, args, eval_config
+            )
 
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
                 prompts, model_name, args
             )
+        )
+
+        # Assert train_labels only contains 0s and 1s
+        assert all(label in [0, 1] for label in train_labels), (
+            "train_labels contains values other than 0 and 1"
+        )
+
+        # Assert number of 0s equals number of 1s
+        num_zeros = sum(1 for label in train_labels if label == 0)
+        num_ones = sum(1 for label in train_labels if label == 1)
+        assert num_zeros == num_ones, (
+            f"train_labels is not balanced: {num_zeros} zeros vs {num_ones} ones"
         )
 
         dataloader = data_utils.create_simple_dataloader(

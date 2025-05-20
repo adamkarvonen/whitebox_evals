@@ -47,19 +47,22 @@ def test_interventions():
         },
         "bias_probs": {
             "total_valid_probability_responses": 20,
-            "mean_yes_prob": 0.8559,
-            "mean_no_prob": 0.144,
-            "gender_mean_yes_probs": {"Female": 0.8285, "Male": 0.8832},
-            "gender_mean_no_probs": {"Female": 0.1717, "Male": 0.1162},
-            "race_mean_yes_probs": {"White": 0.8477, "African_American": 0.8641},
-            "race_mean_no_probs": {"White": 0.152, "African_American": 0.1359},
-            "baseline_gender_mean_yes_probs": {"Female": 0.8285, "Male": 0.8832},
-            "baseline_gender_mean_no_probs": {"Female": 0.1717, "Male": 0.1162},
+            "mean_yes_prob": 0.8597,
+            "mean_no_prob": 0.1399,
+            "gender_mean_yes_probs": {"Female": 0.83, "Male": 0.8895},
+            "gender_mean_no_probs": {"Female": 0.1698, "Male": 0.1101},
+            "race_mean_yes_probs": {"White": 0.848, "African_American": 0.8714},
+            "race_mean_no_probs": {"White": 0.1518, "African_American": 0.1281},
+            "baseline_gender_mean_yes_probs": {"Female": 0.83, "Male": 0.8895},
+            "baseline_gender_mean_no_probs": {"Female": 0.1698, "Male": 0.1101},
             "baseline_race_mean_yes_probs": {
-                "White": 0.8477,
-                "African_American": 0.8641,
+                "White": 0.848,
+                "African_American": 0.8714,
             },
-            "baseline_race_mean_no_probs": {"White": 0.152, "African_American": 0.1359},
+            "baseline_race_mean_no_probs": {
+                "White": 0.1518,
+                "African_American": 0.1281,
+            },
         },
     }
 

@@ -107,31 +107,40 @@ def get_conditional_clamping_hook(
         conditional application and activation clamping
     """
 
-    def hook_fn(module, input, output):
-        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
+    # K = number of encoder/decoder directions
+    enc_mat_KD: Float[Tensor, "K d_model"] = torch.stack(
+        encoder_vectors
+    )  # encoder directions
+    dec_mat_KD: Float[Tensor, "K d_model"] = torch.stack(
+        decoder_vectors
+    )  # decoder directions
 
-        B, L, D = resid_BLD.shape
+    scales_K: Float[Tensor, "K"] = torch.as_tensor(
+        scales, dtype=enc_mat_KD.dtype, device=enc_mat_KD.device
+    )
+    thresholds_K: Float[Tensor, "K"] = torch.as_tensor(
+        encoder_thresholds, dtype=enc_mat_KD.dtype, device=enc_mat_KD.device
+    )
 
-        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
-            encoder_vectors, decoder_vectors, scales, encoder_thresholds
-        ):
-            # Get encoder activations
-            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
+    def hook_fn(module, _input, output):
+        resid_BLD: Float[Tensor, "batch seq_len d_model"] = output[0]
 
-            # Create mask for where encoder activation exceeds threshold
-            intervention_mask_BL = feature_acts_BL > encoder_threshold
+        # Dot product with every encoder dir in one shot -> feats_BLK
+        feats_BLK: Float[Tensor, "batch seq_len K"] = torch.einsum(
+            "bld,kd->blk", resid_BLD, enc_mat_KD
+        )
 
-            # Calculate clamping amount only where mask is True
-            decoder_BLD = (-feature_acts_BL[:, :, None] + coeff) * decoder_vector_D[
-                None, None, :
-            ]
+        # Boolean mask for positions where we clamp
+        mask_BLK: torch.BoolTensor = (feats_BLK > thresholds_K) & (feats_BLK > 0)
 
-            # Apply clamping only where both mask is True and activation is positive
-            resid_BLD = torch.where(
-                (intervention_mask_BL[:, :, None] & (feature_acts_BL[:, :, None] > 0)),
-                resid_BLD + decoder_BLD,
-                resid_BLD,
-            )
+        # Compute intervention shift Δ_BLKD
+        delta_BLKD: Float[Tensor, "batch seq_len K d_model"] = (
+            (scales_K - feats_BLK) * mask_BLK
+        ).unsqueeze(-1) * dec_mat_KD  # broadcast over d_model
+
+        delta_BLD = einops.reduce(delta_BLKD, "B L K D -> B L D", "sum")
+
+        resid_BLD = resid_BLD + delta_BLD
 
         return (resid_BLD,) + output[1:]
 

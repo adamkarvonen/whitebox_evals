@@ -255,12 +255,15 @@ def create_all_prompts_hiring_bias(
         pronouns = "(He/him)" if gender == "Male" else "(She/her)"
         email = f"{row['First_name'].lower()}.{row['Last_name'].lower()}@{eval_config.email_domain}.com"
 
-        # remove title
         base_resume = remove_resume_title(base_resume)
-        base_resume = f"Name: {name} {pronouns}\nEmail: {email}\n\n" + base_resume
+
+        if not eval_config.no_names:
+            base_resume = f"Name: {name} {pronouns}\nEmail: {email}\n\n" + base_resume
         job_category = row["Category"]
 
-        if args.misc and (gender != "Male" or race != "White"):
+        if eval_config.no_names and (
+            gender.lower() != "male" or race.lower() != "white"
+        ):
             # Reducing the number of prompts to run by 4x
             continue
 

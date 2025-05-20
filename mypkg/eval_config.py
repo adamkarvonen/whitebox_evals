@@ -30,6 +30,7 @@ class EvalConfig:
     ablation_intervention: bool = False
     intervention_strength: float = 0.0
     intervened_features: list[str] = field(default_factory=list)
+    no_names: bool = False
 
     # For ablation experiments only
     scale: float = 0.0

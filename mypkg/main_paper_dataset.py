@@ -283,6 +283,8 @@ async def main(
 
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt
 
+    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
+
     python mypkg/main_paper_dataset.py --inference_mode gpu_forward_pass --overwrite_existing_results --anthropic_dataset"""
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -296,6 +298,8 @@ async def main(
     MAX_LENGTH = 2500
     BATCH_SIZE_MULTIPLIER = 2
 
+    NO_NAMES = False
+
     eval_config = EvalConfig(
         inference_mode=args.inference_mode,
         model_name="",
@@ -308,6 +312,7 @@ async def main(
         downsample=args.downsample,
         system_prompt_filename=args.system_prompt_filename,
         anti_bias_statement_file=args.anti_bias_statement_file,
+        no_names=NO_NAMES,
     )
 
     # Set the seed for reproducibility

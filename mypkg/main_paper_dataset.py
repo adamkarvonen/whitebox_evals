@@ -50,6 +50,7 @@ class InferenceMode(Enum):
     GPU_INFERENCE = "gpu_inference"
     GPU_FORWARD_PASS = "gpu_forward_pass"
     PERFORM_ABLATIONS = "perform_ablations"
+    PROJECTION_ABLATIONS = "projection_ablations"
     OPEN_ROUTER = "open_router"
     LOGIT_LENS = "logit_lens"
     LOGIT_LENS_WITH_INTERVENTION = "logit_lens_with_intervention"
@@ -350,14 +351,14 @@ async def main(
     else:
         job_descriptions = ["meta_job_description.txt", "base_description.txt"]
         # job_descriptions = ["gm_job_description.txt"]
-        # job_descriptions = ["meta_job_description.txt"]
-        job_descriptions = ["short_meta_job_description.txt"]
+        job_descriptions = ["meta_job_description.txt"]
+        # job_descriptions = ["short_meta_job_description.txt"]
 
     if args.anti_bias_statement_file is None:
         anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
         # anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
         # anti_bias_statement_files = ["v11.txt"]
-        anti_bias_statement_files = ["v0.txt", "v2.txt"]
+        anti_bias_statement_files = ["v2.txt"]
     else:
         anti_bias_statement_files = [args.anti_bias_statement_file]
 
@@ -418,6 +419,7 @@ async def main(
     # Determine scales and bias_types based on inference_mode
     if (
         args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
+        or args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value
         or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
     ):
         scales = [1.0, 2.0, 5.0]
@@ -476,6 +478,7 @@ async def main(
 
         if (
             args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
+            or args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value
             or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
         ):
             if bias_type == "political_orientation":
@@ -550,7 +553,7 @@ async def main(
                 model_name,
                 bias_type,
                 batch_size=batch_size,
-                max_length=total_max_length,
+                max_length=MAX_LENGTH,
             )
 
             print(ablation_features)
@@ -568,6 +571,27 @@ async def main(
                 ablation_features=ablation_features,
                 ablation_type=intervention_type,
                 scale=scale,
+                max_length=total_max_length,
+            )
+        elif args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value:
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * BATCH_SIZE_MULTIPLIER
+            )
+
+            ablation_vectors = model_inference.get_ablation_vectors(
+                model_name,
+                bias_type,
+                batch_size=batch_size,
+                max_length=MAX_LENGTH,
+            )
+
+            results = model_inference.run_single_forward_pass_transformers(
+                prompts,
+                model_name,
+                batch_size=batch_size,
+                ablation_vectors=ablation_vectors,
+                ablation_type="projection_ablations",
                 max_length=total_max_length,
             )
         elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
@@ -661,6 +685,7 @@ async def main(
             if args.inference_mode in [
                 InferenceMode.GPU_FORWARD_PASS.value,
                 InferenceMode.PERFORM_ABLATIONS.value,
+                InferenceMode.PROJECTION_ABLATIONS.value,
             ]:
                 bias_probs = evaluate_bias_probs(results)
                 print("\n\n\n", bias_probs)

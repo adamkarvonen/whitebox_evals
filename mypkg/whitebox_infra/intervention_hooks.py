@@ -147,6 +147,54 @@ def get_conditional_clamping_hook(
     return hook_fn
 
 
+def get_projection_ablation_hook(
+    ablate_vectors: list[Float[Tensor, "d_model"]],
+) -> Callable:
+    """
+    Returns a hook that *ablates* (projects out) one or more directions
+    from every write to the residual stream.
+
+    Args
+    ----
+    ablate_vectors : list of direction vectors r_k  (len K)
+
+    Behaviour
+    ---------
+    For each residual write `resid_BLD`, we compute
+
+        resid_BLD ← resid_BLD  − Σ_k (resid_BLD · r_k) r_k
+
+    so the output tensor is (approximately) orthogonal to every r_k.
+    """
+
+    # Stack directions → (K, D)
+    dirs_KD: Float[Tensor, "K d_model"] = torch.stack(ablate_vectors).to(
+        dtype=torch.bfloat16
+    )
+
+    dirs_KD = torch.nn.functional.normalize(dirs_KD, dim=1)
+
+    def hook_fn(module, _input, output):
+        resid_BLD: Float[Tensor, "batch seq_len d_model"] = output[0]
+
+        # Dot product with all directions → proj_BLK
+        proj_BLK: Float[Tensor, "batch seq_len K"] = torch.einsum(
+            "bld,kd->blk", resid_BLD, dirs_KD
+        )
+
+        # Expand back to d_model and subtract
+        delta_BLKD: Float[Tensor, "batch seq_len K d_model"] = (
+            proj_BLK.unsqueeze(-1) * dirs_KD
+        )
+        delta_BLD: Float[Tensor, "batch seq_len d_model"] = delta_BLKD.sum(dim=2)
+
+        resid_BLD = resid_BLD - delta_BLD
+
+        return (resid_BLD,) + output[1:]
+
+    return hook_fn
+
+
 def get_conditional_steering_hook(
     encoder_vectors: list[Float[Tensor, "d_model"]],
     decoder_vectors: list[Float[Tensor, "d_model"]],
@@ -431,6 +479,8 @@ def get_ablation_hook(
             input_ids,
             tokenizer,
         )
+    elif ablation_type == "projection_ablations":
+        ablation_hook = get_projection_ablation_hook(encoder_vectors)
     else:
         raise ValueError(f"Invalid ablation type: {ablation_type}")
 

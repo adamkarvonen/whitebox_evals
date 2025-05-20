@@ -265,6 +265,7 @@ def run_single_forward_pass_transformers(
     model_name: str,
     batch_size: int = 64,
     ablation_features: Optional[torch.Tensor] = None,
+    ablation_vectors: Optional[dict[int, list[torch.Tensor]]] = None,
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
@@ -313,6 +314,22 @@ def run_single_forward_pass_transformers(
         del sae
         torch.cuda.empty_cache()
 
+    if ablation_vectors is not None:
+        assert ablation_features is None, (
+            "Cannot use both ablation_features and ablation_vectors"
+        )
+        assert ablation_type == "projection_ablations", (
+            "ablation_vectors is only supported for projection ablation"
+        )
+
+        assert len(ablation_vectors.keys()) == 1, "only support one layer for now"
+
+        hook_layer = list(ablation_vectors.keys())[0]
+        scales = None
+        encoder_vectors = ablation_vectors[hook_layer]
+        decoder_vectors = None
+        encoder_biases = None
+
     for batch in tqdm(dataloader, desc="Processing prompts"):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
             batch
@@ -322,7 +339,7 @@ def run_single_forward_pass_transformers(
             "attention_mask": attention_mask,
         }
 
-        if ablation_features is not None:
+        if ablation_features is not None or ablation_vectors is not None:
             ablation_hook = intervention_hooks.get_ablation_hook(
                 ablation_type,
                 encoder_vectors,
@@ -387,7 +404,7 @@ def run_single_forward_pass_transformers(
 
 
 @torch.no_grad()
-def compute_activations(
+def compute_sae_activations(
     transformers_model: AutoModelForCausalLM,
     sae: base_sae.BaseSAE,
     model_inputs: dict[str, torch.Tensor],
@@ -442,11 +459,10 @@ def get_sae_activations(
     dataloader: DataLoader,
     submodules: list[torch.nn.Module],
     chosen_layers: list[int],
-    device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    effects_F = torch.zeros(sae.W_dec.data.shape[0], device=device, dtype=torch.float32)
-    pos_acts_F = torch.zeros_like(effects_F)
-    neg_acts_F = torch.zeros_like(effects_F)
+    diff_acts_F = None  # will hold ΣΔf
+    pos_acts_F = None  # will hold Σpos
+    neg_acts_F = None  # will hold Σneg
 
     for batch in tqdm(dataloader):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
@@ -458,7 +474,7 @@ def get_sae_activations(
             "attention_mask": attention_mask,
         }
 
-        batch_diff_acts_F, batch_pos_acts_F, batch_neg_acts_F = compute_activations(
+        batch_diff_acts_F, batch_pos_acts_F, batch_neg_acts_F = compute_sae_activations(
             model,
             sae,
             model_inputs,
@@ -468,15 +484,23 @@ def get_sae_activations(
             verbose=False,
         )
 
-        effects_F += batch_diff_acts_F.to(torch.float32)
+        if diff_acts_F is None:
+            diff_acts_F = torch.zeros_like(batch_diff_acts_F, dtype=torch.float32)
+            pos_acts_F = torch.zeros_like(batch_pos_acts_F, dtype=torch.float32)
+            neg_acts_F = torch.zeros_like(batch_neg_acts_F, dtype=torch.float32)
+
+            assert diff_acts_F.shape == pos_acts_F.shape
+            assert pos_acts_F.shape == neg_acts_F.shape
+
+        diff_acts_F += batch_diff_acts_F.to(torch.float32)
         pos_acts_F += batch_pos_acts_F.to(torch.float32)
         neg_acts_F += batch_neg_acts_F.to(torch.float32)
 
-    effects_F /= len(dataloader)
+    diff_acts_F /= len(dataloader)
     pos_acts_F /= int(len(dataloader) * 0.5)
     neg_acts_F /= int(len(dataloader) * 0.5)
 
-    return effects_F, pos_acts_F, neg_acts_F
+    return diff_acts_F, pos_acts_F, neg_acts_F
 
 
 def get_ablation_features(
@@ -486,7 +510,7 @@ def get_ablation_features(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
-) -> list[hiring_bias_prompts.ResumePromptResult]:
+) -> torch.Tensor:
     assert padding_side in ["left", "right"]
     assert bias_type in ["gender", "race", "political_orientation"]
 
@@ -577,7 +601,7 @@ def get_ablation_features(
         submodules = [model_utils.get_submodule(model, chosen_layer)]
 
         diff_acts_F, pos_acts_F, neg_acts_F = get_sae_activations(
-            model, sae, dataloader, submodules, [chosen_layer], device
+            model, sae, dataloader, submodules, [chosen_layer]
         )
 
         torch.save((diff_acts_F, pos_acts_F, neg_acts_F), filename)
@@ -594,3 +618,198 @@ def get_ablation_features(
     selected_ids = acts_top_k_ids[mask]
 
     return selected_ids
+
+
+@torch.no_grad()
+def compute_activations(
+    transformers_model: AutoModelForCausalLM,
+    model_inputs: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    chosen_layers: list[int],
+    submodules: list[torch.nn.Module],
+    verbose: bool = False,
+    ignore_bos: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    assert len(chosen_layers) == 1, "Only one layer is supported for now."
+
+    layer_acts_BLD = model_utils.collect_activations(
+        transformers_model,
+        submodules[0],
+        model_inputs,
+    )
+
+    layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
+
+    # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+
+    pos_mask_B = labels == 1
+    neg_mask_B = labels == 0
+
+    pos_acts_BLD = layer_acts_BLD[pos_mask_B]
+    neg_acts_BLD = layer_acts_BLD[neg_mask_B]
+
+    pos_acts_D = einops.reduce(
+        pos_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
+    )
+    neg_acts_D = einops.reduce(
+        neg_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
+    )
+
+    if pos_mask_B.sum().item() == 0:
+        assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
+        pos_acts_D = torch.zeros_like(neg_acts_D)
+    if neg_mask_B.sum().item() == 0:
+        assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
+        neg_acts_D = torch.zeros_like(pos_acts_D)
+
+    diff_acts_D = pos_acts_D - neg_acts_D
+
+    return diff_acts_D, pos_acts_D, neg_acts_D
+
+
+def get_model_activations(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    submodules: list[torch.nn.Module],
+    chosen_layers: list[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    diff_acts_D = None  # will hold ΣΔf
+    pos_acts_D = None  # will hold Σpos
+    neg_acts_D = None  # will hold Σneg
+
+    for batch in tqdm(dataloader):
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
+
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        batch_diff_acts_D, batch_pos_acts_D, batch_neg_acts_D = compute_activations(
+            model,
+            model_inputs,
+            labels,
+            chosen_layers,
+            submodules,
+            verbose=False,
+        )
+
+        if diff_acts_D is None:
+            diff_acts_D = torch.zeros_like(batch_diff_acts_D, dtype=torch.float32)
+            pos_acts_D = torch.zeros_like(batch_pos_acts_D, dtype=torch.float32)
+            neg_acts_D = torch.zeros_like(batch_neg_acts_D, dtype=torch.float32)
+
+            assert diff_acts_D.shape == pos_acts_D.shape
+            assert pos_acts_D.shape == neg_acts_D.shape
+
+        diff_acts_D += batch_diff_acts_D.to(torch.float32)
+        pos_acts_D += batch_pos_acts_D.to(torch.float32)
+        neg_acts_D += batch_neg_acts_D.to(torch.float32)
+
+    diff_acts_D /= len(dataloader)
+    pos_acts_D /= int(len(dataloader) * 0.5)
+    neg_acts_D /= int(len(dataloader) * 0.5)
+
+    return diff_acts_D, pos_acts_D, neg_acts_D
+
+
+def get_ablation_vectors(
+    model_name: str,
+    bias_type: str,
+    batch_size: int = 64,
+    padding_side: str = "left",
+    max_length: int = 8192,
+    model: Optional[AutoModelForCausalLM] = None,
+) -> dict[int, list[torch.Tensor]]:
+    assert padding_side in ["left", "right"]
+    assert bias_type in ["gender", "race", "political_orientation"]
+
+    layer_percent = 25
+    downsample = 150
+
+    chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
+        layer_percent
+    ]["layer"]
+
+    ablation_features_dir = "ablation_vectors"
+    os.makedirs(ablation_features_dir, exist_ok=True)
+    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{downsample}.pt".replace(
+        "/", "_"
+    )
+    filename = os.path.join(ablation_features_dir, filename)
+    if os.path.exists(filename):
+        diff_acts_F, pos_acts_F, neg_acts_F = torch.load(filename)
+    else:
+        print("Computing ablation features")
+        dtype = torch.bfloat16
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if model is None:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                device_map="auto",
+                # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
+            )
+        # tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        eval_config = EvalConfig(
+            model_name=model_name,
+            political_orientation=bias_type == "political_orientation",
+            pregnancy=False,
+            employment_gap=False,
+            anthropic_dataset=False,
+            downsample=downsample,
+            inference_mode="gpu_forward_pass",
+            anti_bias_statement_file="v2.txt",
+            job_description_file="base_description.txt",
+            system_prompt_filename="yes_no.txt",
+        )
+
+        args = hiring_bias_prompts.HiringBiasArgs(
+            political_orientation=bias_type == "political_orientation",
+            employment_gap=bias_type == "employment_gap",
+            pregnancy=bias_type == "pregnancy",
+            race=bias_type == "race",
+            gender=bias_type == "gender",
+            misc=bias_type == "misc",
+        )
+
+        df = dataset_setup.load_raw_dataset()
+        if eval_config.downsample:
+            df = dataset_setup.balanced_downsample(
+                df,
+                eval_config.downsample,
+                eval_config.random_seed,
+            )
+
+        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
+            df, args, eval_config
+        )
+
+        train_texts, train_labels, train_resume_prompt_results = (
+            hiring_bias_prompts.process_hiring_bias_resumes_prompts(
+                prompts, model_name, args
+            )
+        )
+
+        dataloader = data_utils.create_simple_dataloader(
+            train_texts,
+            train_labels,
+            train_resume_prompt_results,
+            model_name,
+            device,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+
+        submodules = [model_utils.get_submodule(model, chosen_layer)]
+
+        diff_acts_F, pos_acts_F, neg_acts_F = get_model_activations(
+            model, dataloader, submodules, [chosen_layer]
+        )
+
+        torch.save((diff_acts_F, pos_acts_F, neg_acts_F), filename)
+
+    return {chosen_layer: [diff_acts_F]}

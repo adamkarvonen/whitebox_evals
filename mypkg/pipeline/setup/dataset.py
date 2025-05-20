@@ -73,7 +73,7 @@ def filter_by_demographics(df, gender=None, race=None, politics=None):
     return df.reset_index(drop=True)
 
 
-def load_full_anthropic_dataset(downsample_questions: int = 41):
+def load_full_anthropic_dataset(downsample_questions: int = 150):
     explicit_dataset = load_dataset("Anthropic/discrim-eval", "explicit")
     implicit_dataset = load_dataset("Anthropic/discrim-eval", "implicit")
 

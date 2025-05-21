@@ -10,7 +10,7 @@ import copy
 class Probe(nn.Module):
     def __init__(self, activation_dim: int, dtype: torch.dtype):
         super().__init__()
-        self.net = nn.Linear(activation_dim, 1, bias=True, dtype=dtype)
+        self.net = nn.Linear(activation_dim, 1, bias=False, dtype=dtype)
 
     def forward(self, x):
         return self.net(x).squeeze(-1)
@@ -127,7 +127,7 @@ def train_probe_gpu(
     epochs: int,
     lr: float,
     verbose: bool = False,
-    l1_penalty: float | None = None,
+    weight_decay: float = 0.01,
     early_stopping_patience: int = 10,
 ) -> tuple[Probe, float]:
     device = train_inputs.device
@@ -136,7 +136,7 @@ def train_probe_gpu(
     print(f"Training probe with dim: {dim}, device: {device}, dtype: {model_dtype}")
 
     probe = Probe(dim, model_dtype).to(device)
-    optimizer = torch.optim.AdamW(probe.parameters(), lr=lr)  # type: ignore
+    optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.BCEWithLogitsLoss()
 
     best_test_accuracy = 0.0
@@ -153,10 +153,6 @@ def train_probe_gpu(
             loss = criterion(
                 logits_B, labels_B.clone().detach().to(device=device, dtype=model_dtype)
             )
-
-            if l1_penalty is not None:
-                l1_loss = l1_penalty * torch.sum(torch.abs(probe.net.weight))
-                loss += l1_loss
 
             optimizer.zero_grad()
             loss.backward()

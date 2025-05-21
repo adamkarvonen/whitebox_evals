@@ -217,6 +217,7 @@ def run_inference_transformers(
     )
 
     if ablation_features is not None:
+        raise ValueError("Currently broken, see gpu_forward_pass")
         sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
         encoder_vectors, decoder_vectors, encoder_biases = (
             intervention_hooks.get_sae_vectors(ablation_features, sae)
@@ -300,6 +301,8 @@ def run_single_forward_pass_transformers(
         max_length=max_length,
     )
 
+    ablation_features_dict = None
+
     if ablation_features is not None:
         trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
         sae = model_utils.load_model_sae(
@@ -314,6 +317,10 @@ def run_single_forward_pass_transformers(
         del sae
         torch.cuda.empty_cache()
 
+        ablation_features_dict = {
+            hook_layer: (encoder_vectors, decoder_vectors, scales, encoder_biases)
+        }
+
     if ablation_vectors is not None:
         assert ablation_features is None, (
             "Cannot use both ablation_features and ablation_vectors"
@@ -321,14 +328,9 @@ def run_single_forward_pass_transformers(
         assert ablation_type == "projection_ablations", (
             "ablation_vectors is only supported for projection ablation"
         )
-
-        assert len(ablation_vectors.keys()) == 1, "only support one layer for now"
-
-        hook_layer = list(ablation_vectors.keys())[0]
-        scales = None
-        encoder_vectors = ablation_vectors[hook_layer]
-        decoder_vectors = None
-        encoder_biases = None
+        ablation_features_dict = {}
+        for layer, acts_F in ablation_vectors.items():
+            ablation_features_dict[layer] = (acts_F, None, None, None)
 
     for batch in tqdm(dataloader, desc="Processing prompts"):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
@@ -339,20 +341,29 @@ def run_single_forward_pass_transformers(
             "attention_mask": attention_mask,
         }
 
-        if ablation_features is not None or ablation_vectors is not None:
-            ablation_hook = intervention_hooks.get_ablation_hook(
-                ablation_type,
+        if ablation_features_dict is not None:
+            handles = []
+
+            for layer_idx, (
                 encoder_vectors,
                 decoder_vectors,
                 scales,
                 encoder_biases,
-                resume_prompt_results_batch,
-                input_ids,
-                tokenizer,
-            )
+            ) in ablation_features_dict.items():
+                ablation_hook = intervention_hooks.get_ablation_hook(
+                    ablation_type,
+                    encoder_vectors,
+                    decoder_vectors,
+                    scales,
+                    encoder_biases,
+                    resume_prompt_results_batch,
+                    input_ids,
+                    tokenizer,
+                )
 
-            submodule = model_utils.get_submodule(model, hook_layer)
-            handle = submodule.register_forward_hook(ablation_hook)
+                submodule = model_utils.get_submodule(model, layer_idx)
+                handle = submodule.register_forward_hook(ablation_hook)
+                handles.append(handle)
 
         try:
             if collect_activations:
@@ -397,8 +408,9 @@ def run_single_forward_pass_transformers(
                 prompt_dicts[idx].yes_probs = yes_probs_B[i].item()
                 prompt_dicts[idx].no_probs = no_probs_B[i].item()
         finally:
-            if ablation_features is not None:
-                handle.remove()
+            if ablation_features_dict is not None:
+                for handle in handles:
+                    handle.remove()
 
     return prompt_dicts
 
@@ -523,6 +535,9 @@ def get_ablation_features(
     dataset_name = "anthropic"
 
     assert dataset_name in ["resumes", "anthropic"]
+
+    if dataset_name == "anthropic":
+        batch_size *= 8
 
     ablation_features_dir = "ablation_features"
     os.makedirs(ablation_features_dir, exist_ok=True)
@@ -655,16 +670,17 @@ def get_ablation_features(
 
 
 @torch.no_grad()
-def compute_activations(
+def compute_activations_single_layer(
     transformers_model: AutoModelForCausalLM,
     model_inputs: dict[str, torch.Tensor],
     labels: torch.Tensor,
     chosen_layers: list[int],
     submodules: list[torch.nn.Module],
+    final_token_only: bool = True,
     verbose: bool = False,
     ignore_bos: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert len(chosen_layers) == 1, "Only one layer is supported for now."
+) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
     layer_acts_BLD = model_utils.collect_activations(
         transformers_model,
@@ -673,6 +689,9 @@ def compute_activations(
     )
 
     layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
+
+    if final_token_only:
+        layer_acts_BLD = layer_acts_BLD[:, -1:, :]
 
     # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
 
@@ -701,7 +720,7 @@ def compute_activations(
     return diff_acts_D, pos_acts_D, neg_acts_D
 
 
-def get_model_activations(
+def get_single_layer_model_activations(
     model: AutoModelForCausalLM,
     dataloader: DataLoader,
     submodules: list[torch.nn.Module],
@@ -749,6 +768,132 @@ def get_model_activations(
     return diff_acts_D, pos_acts_D, neg_acts_D
 
 
+@torch.no_grad()
+def compute_activations(
+    model: AutoModelForCausalLM,
+    model_inputs: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    chosen_layers: list[int],
+    submodules: list[torch.nn.Module],
+    final_token_only: bool = True,
+    verbose: bool = False,
+    ignore_bos: bool = True,
+) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    # assert len(chosen_layers) == 1, "Only one layer is supported for now."
+
+    submodules = [
+        model_utils.get_submodule(model, i)
+        for i in range(len(list(model.model.layers)))
+    ]
+    activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
+        model, submodules, model_inputs, get_final_token_only=False
+    )
+
+    acts_LD = {}
+    for j in range(len(submodules)):
+        acts_LD[j] = activations_BLD[submodules[j]]
+
+    all_acts_D = {}
+
+    for j in range(len(submodules)):
+        layer_acts_BLD = acts_LD[j]
+        layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
+
+        if final_token_only:
+            layer_acts_BLD = layer_acts_BLD[:, -1:, :]
+
+        # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+
+        pos_mask_B = labels == 1
+        neg_mask_B = labels == 0
+
+        pos_acts_BLD = layer_acts_BLD[pos_mask_B]
+        neg_acts_BLD = layer_acts_BLD[neg_mask_B]
+
+        pos_acts_D = einops.reduce(
+            pos_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
+        )
+        neg_acts_D = einops.reduce(
+            neg_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
+        )
+
+        if pos_mask_B.sum().item() == 0:
+            assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
+            pos_acts_D = torch.zeros_like(neg_acts_D)
+        if neg_mask_B.sum().item() == 0:
+            assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
+            neg_acts_D = torch.zeros_like(pos_acts_D)
+
+        diff_acts_D = pos_acts_D - neg_acts_D
+
+        all_acts_D[j] = (diff_acts_D, pos_acts_D, neg_acts_D)
+
+    return all_acts_D
+
+
+def get_model_activations(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    submodules: list[torch.nn.Module],
+    chosen_layers: list[int],
+) -> dict[int, dict[str, torch.Tensor]]:
+    all_acts_D = {}
+    for j in range(len(model.model.layers)):
+        all_acts_D[j] = {"diff_acts_D": None, "pos_acts_D": None, "neg_acts_D": None}
+
+    for batch in tqdm(dataloader):
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
+
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        batch_acts_D = compute_activations(
+            model,
+            model_inputs,
+            labels,
+            chosen_layers,
+            submodules,
+            final_token_only=False,
+            verbose=False,
+        )
+
+        for j in range(len(model.model.layers)):
+            if all_acts_D[j]["diff_acts_D"] is None:
+                all_acts_D[j]["diff_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+                all_acts_D[j]["pos_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+                all_acts_D[j]["neg_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+
+                assert (
+                    all_acts_D[j]["diff_acts_D"].shape
+                    == all_acts_D[j]["pos_acts_D"].shape
+                )
+                assert (
+                    all_acts_D[j]["pos_acts_D"].shape
+                    == all_acts_D[j]["neg_acts_D"].shape
+                )
+
+            all_acts_D[j]["diff_acts_D"] += batch_acts_D[j][0].to(torch.float32)
+            all_acts_D[j]["pos_acts_D"] += batch_acts_D[j][1].to(torch.float32)
+            all_acts_D[j]["neg_acts_D"] += batch_acts_D[j][2].to(torch.float32)
+
+    for j in range(len(model.model.layers)):
+        all_acts_D[j]["diff_acts_D"] /= len(dataloader)
+        all_acts_D[j]["pos_acts_D"] /= int(len(dataloader) * 0.5)
+        all_acts_D[j]["neg_acts_D"] /= int(len(dataloader) * 0.5)
+
+    return all_acts_D
+
+
 def get_ablation_vectors(
     model_name: str,
     bias_type: str,
@@ -768,6 +913,9 @@ def get_ablation_vectors(
 
     assert dataset_name in ["resumes", "anthropic"]
 
+    if dataset_name == "anthropic":
+        batch_size *= 8
+
     chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
         layer_percent
     ]["layer"]
@@ -779,7 +927,7 @@ def get_ablation_vectors(
     )
     filename = os.path.join(ablation_features_dir, filename)
     if os.path.exists(filename):
-        diff_acts_F, pos_acts_F, neg_acts_F = torch.load(filename)
+        all_acts_D = torch.load(filename)
     else:
         print("Computing ablation features")
         dtype = torch.bfloat16
@@ -862,10 +1010,15 @@ def get_ablation_vectors(
 
         submodules = [model_utils.get_submodule(model, chosen_layer)]
 
-        diff_acts_F, pos_acts_F, neg_acts_F = get_model_activations(
+        all_acts_D = get_model_activations(
             model, dataloader, submodules, [chosen_layer]
         )
 
-        torch.save((diff_acts_F, pos_acts_F, neg_acts_F), filename)
+        torch.save(all_acts_D, filename)
 
-    return {chosen_layer: [diff_acts_F]}
+    intervention_vectors = {}
+
+    for layer in all_acts_D:
+        intervention_vectors[layer] = [all_acts_D[layer]["diff_acts_D"]]
+
+    return intervention_vectors

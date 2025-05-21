@@ -52,7 +52,7 @@ def lookup_sae_features(
 
 def get_sae_vectors(
     ablation_features: torch.Tensor, sae: base_sae.BaseSAE
-) -> list[Float[Tensor, "d_model"]]:
+) -> tuple[list[Float[Tensor, "d_model"]], list[Float[Tensor, "d_model"]], list[float]]:
     encoder_vectors = []
     decoder_vectors = []
     encoder_biases = []

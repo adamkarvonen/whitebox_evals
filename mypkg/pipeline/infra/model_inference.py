@@ -774,32 +774,27 @@ def compute_activations(
     model_inputs: dict[str, torch.Tensor],
     labels: torch.Tensor,
     chosen_layers: list[int],
-    submodules: list[torch.nn.Module],
-    final_token_only: bool = True,
-    verbose: bool = False,
-    ignore_bos: bool = True,
+    final_token_only: bool = False,
 ) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
-    submodules = [
-        model_utils.get_submodule(model, i)
-        for i in range(len(list(model.model.layers)))
-    ]
+    submodules = [model_utils.get_submodule(model, i) for i in chosen_layers]
     activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
         model, submodules, model_inputs, get_final_token_only=False
     )
 
     acts_LD = {}
-    for j in range(len(submodules)):
-        acts_LD[j] = activations_BLD[submodules[j]]
+    for i, j in enumerate(chosen_layers):
+        acts_LD[j] = activations_BLD[submodules[i]]
 
     all_acts_D = {}
 
-    for j in range(len(submodules)):
+    for j in chosen_layers:
         layer_acts_BLD = acts_LD[j]
         layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
 
         if final_token_only:
+            raise NotImplementedError("Final token only not implemented for now")
             layer_acts_BLD = layer_acts_BLD[:, -1:, :]
 
         # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
@@ -834,11 +829,10 @@ def compute_activations(
 def get_model_activations(
     model: AutoModelForCausalLM,
     dataloader: DataLoader,
-    submodules: list[torch.nn.Module],
     chosen_layers: list[int],
 ) -> dict[int, dict[str, torch.Tensor]]:
     all_acts_D = {}
-    for j in range(len(model.model.layers)):
+    for j in chosen_layers:
         all_acts_D[j] = {"diff_acts_D": None, "pos_acts_D": None, "neg_acts_D": None}
 
     for batch in tqdm(dataloader):
@@ -856,12 +850,9 @@ def get_model_activations(
             model_inputs,
             labels,
             chosen_layers,
-            submodules,
-            final_token_only=False,
-            verbose=False,
         )
 
-        for j in range(len(model.model.layers)):
+        for j in chosen_layers:
             if all_acts_D[j]["diff_acts_D"] is None:
                 all_acts_D[j]["diff_acts_D"] = torch.zeros_like(
                     batch_acts_D[j][0], dtype=torch.float32
@@ -886,7 +877,125 @@ def get_model_activations(
             all_acts_D[j]["pos_acts_D"] += batch_acts_D[j][1].to(torch.float32)
             all_acts_D[j]["neg_acts_D"] += batch_acts_D[j][2].to(torch.float32)
 
-    for j in range(len(model.model.layers)):
+    for j in chosen_layers:
+        all_acts_D[j]["diff_acts_D"] /= len(dataloader)
+        all_acts_D[j]["pos_acts_D"] /= int(len(dataloader) * 0.5)
+        all_acts_D[j]["neg_acts_D"] /= int(len(dataloader) * 0.5)
+
+    return all_acts_D
+
+
+@torch.no_grad()
+def compute_mean_activations_per_prompt(
+    model: AutoModelForCausalLM,
+    model_inputs: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    chosen_layers: list[int],
+    final_token_only: bool = False,
+) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    # assert len(chosen_layers) == 1, "Only one layer is supported for now."
+
+    submodules = [model_utils.get_submodule(model, i) for i in chosen_layers]
+    activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
+        model, submodules, model_inputs, get_final_token_only=False
+    )
+
+    acts_LD = {}
+    for i, j in enumerate(chosen_layers):
+        acts_LD[j] = activations_BLD[submodules[i]]
+
+    all_acts_BD = {}
+
+    for j in chosen_layers:
+        layer_acts_BLD = acts_LD[j]
+        layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
+
+        if final_token_only:
+            raise NotImplementedError("Final token only not implemented for now")
+            layer_acts_BLD = layer_acts_BLD[:, -1:, :]
+
+        # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+
+        pos_mask_B = labels == 1
+        neg_mask_B = labels == 0
+
+        pos_acts_BLD = layer_acts_BLD[pos_mask_B]
+        neg_acts_BLD = layer_acts_BLD[neg_mask_B]
+
+        # TODO: Better way to mean over the batch dimension?
+        pos_acts_BD = einops.reduce(
+            pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
+        )
+        neg_acts_BD = einops.reduce(
+            neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
+        )
+
+        if pos_mask_B.sum().item() == 0:
+            assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
+            pos_acts_BD = torch.zeros_like(neg_acts_BD)
+        if neg_mask_B.sum().item() == 0:
+            assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
+            neg_acts_BD = torch.zeros_like(pos_acts_BD)
+
+        diff_acts_BD = pos_acts_BD - neg_acts_BD
+
+        all_acts_BD[j] = (diff_acts_BD, pos_acts_BD, neg_acts_BD)
+
+    return all_acts_BD
+
+
+def get_probes(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    chosen_layers: list[int],
+) -> dict[int, dict[str, torch.Tensor]]:
+    all_acts_D = {}
+    for j in chosen_layers:
+        all_acts_D[j] = {"diff_acts_D": None, "pos_acts_D": None, "neg_acts_D": None}
+
+    for batch in tqdm(dataloader):
+        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
+            batch
+        )
+
+        model_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        batch_acts_D = compute_mean_activations_per_prompt(
+            model,
+            model_inputs,
+            labels,
+            chosen_layers,
+        )
+
+        for j in chosen_layers:
+            if all_acts_D[j]["diff_acts_D"] is None:
+                all_acts_D[j]["diff_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+                all_acts_D[j]["pos_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+                all_acts_D[j]["neg_acts_D"] = torch.zeros_like(
+                    batch_acts_D[j][0], dtype=torch.float32
+                )
+
+                assert (
+                    all_acts_D[j]["diff_acts_D"].shape
+                    == all_acts_D[j]["pos_acts_D"].shape
+                )
+                assert (
+                    all_acts_D[j]["pos_acts_D"].shape
+                    == all_acts_D[j]["neg_acts_D"].shape
+                )
+
+            all_acts_D[j]["diff_acts_D"] += batch_acts_D[j][0].to(torch.float32)
+            all_acts_D[j]["pos_acts_D"] += batch_acts_D[j][1].to(torch.float32)
+            all_acts_D[j]["neg_acts_D"] += batch_acts_D[j][2].to(torch.float32)
+
+    for j in chosen_layers:
         all_acts_D[j]["diff_acts_D"] /= len(dataloader)
         all_acts_D[j]["pos_acts_D"] /= int(len(dataloader) * 0.5)
         all_acts_D[j]["neg_acts_D"] /= int(len(dataloader) * 0.5)
@@ -915,10 +1024,6 @@ def get_ablation_vectors(
 
     if dataset_name == "anthropic":
         batch_size *= 8
-
-    chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
-        layer_percent
-    ]["layer"]
 
     ablation_features_dir = "ablation_vectors"
     os.makedirs(ablation_features_dir, exist_ok=True)
@@ -1008,11 +1113,12 @@ def get_ablation_vectors(
             max_length=max_length,
         )
 
-        submodules = [model_utils.get_submodule(model, chosen_layer)]
+        # chosen_layers = list(range(len(model.model.layers)))
+        num_layers = len(model.model.layers)
+        chosen_layers = list(range(num_layers // 4, num_layers))
+        # chosen_layers = list(range(num_layers))
 
-        all_acts_D = get_model_activations(
-            model, dataloader, submodules, [chosen_layer]
-        )
+        all_acts_D = get_model_activations(model, dataloader, chosen_layers)
 
         torch.save(all_acts_D, filename)
 

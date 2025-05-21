@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float, Int, jaxtyped
 from beartype import beartype
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
 import copy
 
 
@@ -26,7 +24,10 @@ def train_sklearn_probe(
     C: float = 1.0,  # default sklearn value
     verbose: bool = False,
     l1_ratio: float | None = None,
-) -> tuple[LogisticRegression, float]:
+) -> tuple[torch.Tensor, float]:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score
+
     train_inputs = train_inputs.to(dtype=torch.float32)
     test_inputs = test_inputs.to(dtype=torch.float32)
 
@@ -72,8 +73,11 @@ def train_sklearn_probe(
 def test_sklearn_probe(
     inputs: Float[torch.Tensor, "dataset_size d_model"],
     labels: Int[torch.Tensor, "dataset_size"],
-    probe: LogisticRegression,
+    probe: torch.Tensor,
 ) -> float:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score
+
     inputs = inputs.to(dtype=torch.float32)
     inputs_np = inputs.cpu().numpy()
     labels_np = labels.cpu().numpy()

@@ -15,9 +15,6 @@ from torch import Tensor
 import einops
 import argparse
 from torch.utils.data import DataLoader
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils

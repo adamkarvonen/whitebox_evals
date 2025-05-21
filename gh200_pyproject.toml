@@ -28,7 +28,8 @@ dependencies = [
     "transformers",
     "wheel>=0.45.1",
     "numpy<2.0",
-    "torch>=2.4.1"
+    "torch>=2.4.1",
+    "beartype"
 ]
 
 # NOTE: TO INSTALL:

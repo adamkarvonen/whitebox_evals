@@ -15,6 +15,9 @@ from torch import Tensor
 import einops
 import argparse
 from torch.utils.data import DataLoader
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
 
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.model_utils as model_utils
@@ -23,6 +26,7 @@ from mypkg.whitebox_infra.dictionaries import base_sae
 import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
 from mypkg.eval_config import EvalConfig
 import mypkg.pipeline.setup.dataset as dataset_setup
+import mypkg.pipeline.infra.probe_training as probe_training
 
 
 async def openrouter_request(
@@ -892,7 +896,7 @@ def compute_mean_activations_per_prompt(
     labels: torch.Tensor,
     chosen_layers: list[int],
     final_token_only: bool = False,
-) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
     # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
     submodules = [model_utils.get_submodule(model, i) for i in chosen_layers]
@@ -923,6 +927,12 @@ def compute_mean_activations_per_prompt(
         neg_acts_BLD = layer_acts_BLD[neg_mask_B]
 
         # TODO: Better way to mean over the batch dimension?
+        # pos_attn_mask_B = model_inputs["attention_mask"][pos_mask_B]
+        # neg_attn_mask_B = model_inputs["attention_mask"][neg_mask_B]
+
+        # num_pos_tokens_B = pos_attn_mask_B.sum(dim=1)
+        # num_neg_tokens_B = neg_attn_mask_B.sum(dim=1)
+
         pos_acts_BD = einops.reduce(
             pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
         )
@@ -932,26 +942,27 @@ def compute_mean_activations_per_prompt(
 
         if pos_mask_B.sum().item() == 0:
             assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
-            pos_acts_BD = torch.zeros_like(neg_acts_BD)
-        if neg_mask_B.sum().item() == 0:
+            pos_acts_BD = None
+        elif neg_mask_B.sum().item() == 0:
             assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
-            neg_acts_BD = torch.zeros_like(pos_acts_BD)
+            neg_acts_BD = None
 
-        diff_acts_BD = pos_acts_BD - neg_acts_BD
-
-        all_acts_BD[j] = (diff_acts_BD, pos_acts_BD, neg_acts_BD)
+        all_acts_BD[j] = (pos_acts_BD, neg_acts_BD)
 
     return all_acts_BD
 
 
-def get_probes(
+@torch.no_grad()
+def get_pos_neg_activations(
     model: AutoModelForCausalLM,
     dataloader: DataLoader,
     chosen_layers: list[int],
-) -> dict[int, dict[str, torch.Tensor]]:
-    all_acts_D = {}
+) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]:
+    pos_acts_BD = {}
+    neg_acts_BD = {}
     for j in chosen_layers:
-        all_acts_D[j] = {"diff_acts_D": None, "pos_acts_D": None, "neg_acts_D": None}
+        pos_acts_BD[j] = []
+        neg_acts_BD[j] = []
 
     for batch in tqdm(dataloader):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
@@ -963,7 +974,7 @@ def get_probes(
             "attention_mask": attention_mask,
         }
 
-        batch_acts_D = compute_mean_activations_per_prompt(
+        batch_acts_BD = compute_mean_activations_per_prompt(
             model,
             model_inputs,
             labels,
@@ -971,36 +982,80 @@ def get_probes(
         )
 
         for j in chosen_layers:
-            if all_acts_D[j]["diff_acts_D"] is None:
-                all_acts_D[j]["diff_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
-                all_acts_D[j]["pos_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
-                all_acts_D[j]["neg_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
+            batch_pos_acts_BD = batch_acts_BD[j][0]
+            batch_neg_acts_BD = batch_acts_BD[j][1]
 
-                assert (
-                    all_acts_D[j]["diff_acts_D"].shape
-                    == all_acts_D[j]["pos_acts_D"].shape
-                )
-                assert (
-                    all_acts_D[j]["pos_acts_D"].shape
-                    == all_acts_D[j]["neg_acts_D"].shape
-                )
+            if batch_pos_acts_BD is not None:
+                pos_acts_BD[j].append(batch_pos_acts_BD.to(torch.float32))
+            if batch_neg_acts_BD is not None:
+                neg_acts_BD[j].append(batch_neg_acts_BD.to(torch.float32))
 
-            all_acts_D[j]["diff_acts_D"] += batch_acts_D[j][0].to(torch.float32)
-            all_acts_D[j]["pos_acts_D"] += batch_acts_D[j][1].to(torch.float32)
-            all_acts_D[j]["neg_acts_D"] += batch_acts_D[j][2].to(torch.float32)
+    pos_acts_BD = {j: torch.cat(pos_acts_BD[j], dim=0) for j in chosen_layers}
+    neg_acts_BD = {j: torch.cat(neg_acts_BD[j], dim=0) for j in chosen_layers}
 
-    for j in chosen_layers:
-        all_acts_D[j]["diff_acts_D"] /= len(dataloader)
-        all_acts_D[j]["pos_acts_D"] /= int(len(dataloader) * 0.5)
-        all_acts_D[j]["neg_acts_D"] /= int(len(dataloader) * 0.5)
+    return pos_acts_BD, neg_acts_BD
 
-    return all_acts_D
+
+def get_probes(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    chosen_layers: list[int],
+    C: float = 1.0,
+    max_iter: int = 2000,
+) -> dict[int, dict[str, torch.Tensor]]:
+    pos_acts_BD, neg_acts_BD = get_pos_neg_activations(model, dataloader, chosen_layers)
+
+    probe_dirs = {}  # layer → unit vector (D,)
+    probe_accs = {}  # layer → test accuracy
+
+    for layer in pos_acts_BD:
+        X = torch.cat([pos_acts_BD[layer], neg_acts_BD[layer]], 0)
+        y = torch.cat(
+            [
+                torch.ones(pos_acts_BD[layer].shape[0], dtype=torch.long),
+                torch.zeros(neg_acts_BD[layer].shape[0], dtype=torch.long),
+            ],
+            0,
+        )
+
+        # 3. 80/20 split (torch only) --------------------------------------------
+        N = X.size(0)
+        idx = torch.randperm(N)
+        split = int(0.8 * N)
+        train_idx, test_idx = idx[:split], idx[split:]
+        X_train, y_train = X[train_idx], y[train_idx]
+        X_test, y_test = X[test_idx], y[test_idx]
+
+        # 4. choose a trainer ------------------------------------------------------
+        # ---- sklearn path (CPU) ----
+        # sk_probe, sk_acc = probe_training.train_sklearn_probe(
+        #     X_train, y_train, X_test, y_test,
+        #     max_iter=1000, C=1.0, verbose=False,
+        # )
+        # w_sk   = torch.from_numpy(sk_probe.coef_.ravel()).float()
+        # dir_sk = w_sk / w_sk.norm()
+
+        # ---- GPU path (comment in if you prefer) ----
+        gpu_probe, gpu_acc = probe_training.train_probe_gpu(
+            X_train.cuda(),
+            y_train.cuda(),
+            X_test.cuda(),
+            y_test.cuda(),
+            dim=X.size(1),
+            batch_size=4096,
+            epochs=25,
+            lr=1e-3,
+            l1_penalty=None,  # or 1e-4 if you want sparsity
+            verbose=False,
+        )
+        w_gpu = gpu_probe.net.weight.data.squeeze()
+        dir_gpu = w_gpu / w_gpu.norm()
+
+        probe_dirs[layer] = {"diff_acts_D": dir_gpu}
+        probe_accs[layer] = gpu_acc
+        print(f"layer {layer:2d}  acc {probe_accs[layer]:.3f}")
+
+    return probe_dirs
 
 
 def get_ablation_vectors(
@@ -1080,7 +1135,7 @@ def get_ablation_vectors(
                 df, args, eval_config
             )
         elif dataset_name == "anthropic":
-            df = dataset_setup.load_full_anthropic_dataset()
+            df = dataset_setup.load_full_anthropic_dataset(downsample_questions=15)
             prompts = hiring_bias_prompts.create_all_prompts_anthropic(
                 df, args, eval_config
             )
@@ -1118,7 +1173,8 @@ def get_ablation_vectors(
         chosen_layers = list(range(num_layers // 4, num_layers))
         # chosen_layers = list(range(num_layers))
 
-        all_acts_D = get_model_activations(model, dataloader, chosen_layers)
+        # all_acts_D = get_model_activations(model, dataloader, chosen_layers)
+        all_acts_D = get_probes(model, dataloader, chosen_layers)
 
         torch.save(all_acts_D, filename)
 

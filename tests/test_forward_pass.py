@@ -38,6 +38,7 @@ def test_forward_pass():
         score_output_dir="test_output",
         overwrite_existing_results=True,
         model_name="google/gemma-2-2b-it",
+        job_description_file="meta_job_description.txt",
     )
 
     cache_dir = "testing_cache"

@@ -1043,9 +1043,10 @@ def get_probes(
             y_test.cuda(),
             dim=X.size(1),
             batch_size=4096,
-            epochs=25,
+            epochs=500,
             lr=1e-3,
-            l1_penalty=None,  # or 1e-4 if you want sparsity
+            weight_decay=0.03,
+            early_stopping_patience=50,
             verbose=False,
         )
         w_gpu = gpu_probe.net.weight.data.squeeze()
@@ -1086,7 +1087,7 @@ def get_ablation_vectors(
         "/", "_"
     )
     filename = os.path.join(ablation_features_dir, filename)
-    if os.path.exists(filename):
+    if os.path.exists(filename) and False:
         all_acts_D = torch.load(filename)
     else:
         print("Computing ablation features")

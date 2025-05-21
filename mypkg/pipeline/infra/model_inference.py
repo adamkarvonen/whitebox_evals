@@ -1135,7 +1135,7 @@ def get_ablation_vectors(
                 df, args, eval_config
             )
         elif dataset_name == "anthropic":
-            df = dataset_setup.load_full_anthropic_dataset(downsample_questions=15)
+            df = dataset_setup.load_full_anthropic_dataset(downsample_questions=None)
             prompts = hiring_bias_prompts.create_all_prompts_anthropic(
                 df, args, eval_config
             )

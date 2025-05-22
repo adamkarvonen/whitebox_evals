@@ -24,7 +24,7 @@ from typing import Optional, Any
 from enum import Enum
 import pickle
 
-from mypkg.eval_config import EvalConfig, InferenceMode
+from mypkg.eval_config import EvalConfig, InferenceMode, FrozenEvalConfig
 import mypkg.pipeline.setup.dataset as dataset_setup
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.pipeline.infra.model_inference as model_inference
@@ -175,6 +175,8 @@ async def main(
         eval_config.scale = scale
         eval_config.bias_type = bias_type
 
+        frozen_eval_config = FrozenEvalConfig.model_validate(eval_config.model_dump())
+
         print(f"Running with anti-bias statement: {anti_bias_statement_file}")
         print(f"Running with job description: {job_description}")
         print(f"Running with model: {model_name}")
@@ -188,7 +190,7 @@ async def main(
         job_description_length = len(tokenizer.encode(job_description_text))
         print(f"Job description length: {job_description_length}")
 
-        total_max_length = eval_config.max_length + job_description_length
+        total_max_length = frozen_eval_config.max_length + job_description_length
         print(f"Total max length: {total_max_length}")
 
         results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
@@ -196,8 +198,8 @@ async def main(
         ).replace("/", "_")
 
         output_dir = os.path.join(
-            eval_config.score_output_dir,
-            eval_config.inference_mode,
+            frozen_eval_config.score_output_dir,
+            frozen_eval_config.inference_mode,
             model_name.replace("/", "_"),
         )
         os.makedirs(output_dir, exist_ok=True)
@@ -207,27 +209,27 @@ async def main(
 
         if (
             os.path.exists(results_output_filepath)
-            and not eval_config.overwrite_existing_results
+            and not frozen_eval_config.overwrite_existing_results
         ):
             print(f"Skipping {results_filename} because it already exists")
             continue
 
-        if eval_config.anthropic_dataset:
+        if frozen_eval_config.anthropic_dataset:
             prompts = hiring_bias_prompts.create_all_prompts_anthropic(
-                df, eval_config, add_system_prompt=True
+                df, frozen_eval_config, add_system_prompt=True
             )
         else:
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-                df, eval_config
+                df, frozen_eval_config
             )
 
         gc.collect()
         torch.cuda.empty_cache()
 
-        if eval_config.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
+        if frozen_eval_config.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * eval_config.batch_size_multiplier
+                * frozen_eval_config.batch_size_multiplier
             )
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
@@ -236,18 +238,18 @@ async def main(
                 max_length=total_max_length,
                 collect_activations=False,
             )
-        elif eval_config.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
+        elif frozen_eval_config.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * eval_config.batch_size_multiplier
+                * frozen_eval_config.batch_size_multiplier
             )
 
             ablation_features = model_inference.get_ablation_features(
                 model_name,
                 bias_type,
                 batch_size=batch_size,
-                max_length=eval_config.max_length,
-                overwrite_previous=eval_config.overwrite_existing_results,
+                max_length=frozen_eval_config.max_length,
+                overwrite_previous=frozen_eval_config.overwrite_existing_results,
             )
 
             print(ablation_features)
@@ -263,22 +265,25 @@ async def main(
                 model_name,
                 batch_size=batch_size,
                 ablation_features=ablation_features,
-                ablation_type=eval_config.sae_intervention_type,
+                ablation_type=frozen_eval_config.sae_intervention_type,
                 scale=scale,
                 max_length=total_max_length,
             )
-        elif eval_config.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value:
+        elif (
+            frozen_eval_config.inference_mode
+            == InferenceMode.PROJECTION_ABLATIONS.value
+        ):
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * eval_config.batch_size_multiplier
+                * frozen_eval_config.batch_size_multiplier
             )
 
             ablation_vectors = model_inference.get_ablation_vectors(
                 model_name,
                 bias_type,
                 batch_size=batch_size,
-                max_length=eval_config.max_length,
-                overwrite_previous=eval_config.overwrite_existing_results,
+                max_length=frozen_eval_config.max_length,
+                overwrite_previous=frozen_eval_config.overwrite_existing_results,
             )
 
             results = model_inference.run_single_forward_pass_transformers(
@@ -289,17 +294,17 @@ async def main(
                 ablation_type="projection_ablations",
                 max_length=total_max_length,
             )
-        elif eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
+        elif frozen_eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
                 max_new_tokens=max_completion_tokens,
                 model=vllm_model,
             )
-        elif eval_config.inference_mode == InferenceMode.LOGIT_LENS.value:
+        elif frozen_eval_config.inference_mode == InferenceMode.LOGIT_LENS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * eval_config.batch_size_multiplier
+                * frozen_eval_config.batch_size_multiplier
             )
             results = logit_lens.run_logit_lens(
                 prompts,
@@ -310,12 +315,12 @@ async def main(
                 use_tuned_lenses=True,
             )
         elif (
-            eval_config.inference_mode
+            frozen_eval_config.inference_mode
             == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
         ):
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * eval_config.batch_size_multiplier
+                * frozen_eval_config.batch_size_multiplier
             )
 
             ablation_features = intervention_hooks.lookup_sae_features(
@@ -341,18 +346,20 @@ async def main(
                 batch_size=batch_size,
                 max_length=total_max_length,
                 ablation_features=ablation_features,
-                ablation_type=eval_config.sae_intervention_type,
+                ablation_type=frozen_eval_config.sae_intervention_type,
                 scale=scale,
                 use_tuned_lenses=True,
             )
-        elif eval_config.inference_mode == InferenceMode.OPEN_ROUTER.value:
+        elif frozen_eval_config.inference_mode == InferenceMode.OPEN_ROUTER.value:
             # Use the lookup table if the model name is present
             api_model_name = OPENROUTER_NAME_LOOKUP.get(model_name, model_name)
             results = await model_inference.run_model_inference_openrouter(
                 prompts, api_model_name, max_completion_tokens=max_completion_tokens
             )
         else:
-            raise ValueError(f"Unhandled inference mode: {eval_config.inference_mode}")
+            raise ValueError(
+                f"Unhandled inference mode: {frozen_eval_config.inference_mode}"
+            )
 
         # Quick and dirty check to see if prompts are the same from run to run
         total_len = 0
@@ -361,11 +368,11 @@ async def main(
         print(f"Total length of prompts: {total_len}")
 
         bias_scores = hiring_bias_prompts.evaluate_bias(
-            results, system_prompt_filename=eval_config.system_prompt_filename
+            results, system_prompt_filename=frozen_eval_config.system_prompt_filename
         )
         print(bias_scores)
 
-        if eval_config.inference_mode in [
+        if frozen_eval_config.inference_mode in [
             InferenceMode.GPU_FORWARD_PASS.value,
             InferenceMode.PERFORM_ABLATIONS.value,
             InferenceMode.PROJECTION_ABLATIONS.value,
@@ -381,7 +388,7 @@ async def main(
             bias_probs,
             results_output_filepath,
             timestamp,
-            eval_config,
+            frozen_eval_config,
         )
 
         print(f"\nTotal resumes processed: {len(results)}")

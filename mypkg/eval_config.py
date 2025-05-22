@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from dataclasses import field
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, ConfigDict
 
 
 class InferenceMode(str, Enum):
@@ -85,3 +85,7 @@ class EvalConfig(BaseModel, extra="forbid"):
 
     def to_yaml(self, path: str | Path) -> None:
         Path(path).write_text(yaml.safe_dump(self.model_dump()))
+
+
+class FrozenEvalConfig(EvalConfig):
+    model_config = ConfigDict(frozen=True)

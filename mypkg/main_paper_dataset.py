@@ -26,14 +26,7 @@ import pickle
 
 from mypkg.eval_config import EvalConfig
 import mypkg.pipeline.setup.dataset as dataset_setup
-from mypkg.pipeline.infra.hiring_bias_prompts import (
-    create_all_prompts_hiring_bias,
-    create_all_prompts_anthropic,
-    evaluate_bias,
-    evaluate_bias_probs,
-    filter_anthropic_df,
-    modify_anthropic_filled_templates,
-)
+import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.pipeline.infra.model_inference as model_inference
 import mypkg.whitebox_infra.model_utils as model_utils
 import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
@@ -77,7 +70,6 @@ class Logger:
 
 
 def save_evaluation_results(
-    args,
     model_name: str,
     df,
     results,
@@ -94,8 +86,6 @@ def save_evaluation_results(
         "metadata": {
             "timestamp": timestamp,
             "model_name": model_name,
-            # Convert argparse.Namespace to a dict so it's JSON-serializable
-            "arguments": vars(args),
         },
         # 2) Full list of results
         "results": [],
@@ -106,7 +96,7 @@ def save_evaluation_results(
         "summary_info": {
             "total_resumes_processed": len(results),
         },
-        "eval_config": asdict(eval_config),
+        "eval_config": eval_config.model_dump(),
     }
 
     # For each ResumePromptResult in `results`, store relevant info
@@ -165,109 +155,8 @@ REASONING_MODELS = [
 ]
 
 
-# Moved argument parsing to a separate function
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--industry",
-        type=str,
-        help="Industry to evaluate (optional)",
-        default="INFORMATION-TECHNOLOGY",
-    )
-    parser.add_argument("--mode", type=str, choices=["full", "summary"], default="full")
-    parser.add_argument(
-        "--political_orientation",
-        action="store_true",
-        help="Whether to include political orientation information",
-    )
-    parser.add_argument(
-        "--pregnancy",
-        action="store_true",
-        help="Whether to include pregnancy information",
-    )
-    parser.add_argument(
-        "--employment_gap",
-        action="store_true",
-        help="Whether to include employment gap information",
-    )
-    parser.add_argument(
-        "--misc",
-        action="store_true",
-        help="Whether to include misc information",
-    )
-    parser.add_argument(
-        "--anthropic_dataset",
-        action="store_true",
-        help="Whether to use the Anthropic dataset",
-    )
-    parser.add_argument(
-        "--downsample",
-        type=int,
-        default=None,
-        help="Number of samples to randomly select from the dataset",
-    )
-    parser.add_argument(
-        "--system_prompt_filename",
-        type=str,
-        default="yes_no.txt",
-        help="System prompt filename to use",
-    )
-    parser.add_argument(
-        "--job_description_file",
-        type=str,
-        default=None,
-        help="Path to a single job description file; We only use this job description.",
-    )
-    parser.add_argument(
-        "--inference_mode",
-        type=str,
-        choices=[mode.value for mode in InferenceMode],
-        default=InferenceMode.OPEN_ROUTER.value,
-        help="The inference mode to use.",
-    )
-    parser.add_argument(
-        "--anti_bias_statement_file",
-        type=str,
-        default=None,
-        help="Path to a single anti-bias statement file; We only use this statement.",
-    )
-    parser.add_argument(
-        "--score_output_dir",
-        type=str,
-        default="score_output",
-        help="Path to a directory to save the score output.",
-    )
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        default=None,
-        help="The model name to use. If not provided, we will use all model_names in the model_names list.",
-    )
-    parser.add_argument(
-        "--bias_type",
-        type=str,
-        default=None,
-        help="The bias type to use. If not provided, we will use all bias_types in the bias_types list.",
-    )
-    parser.add_argument(
-        "--scale",
-        type=float,
-        default=None,
-        help="The scale to use. If not provided, we will use all scales in the scales list.",
-    )
-    parser.add_argument(
-        "--overwrite_existing_results",
-        action="store_true",
-        help="Whether to overwrite existing results",
-    )
-
-    args = parser.parse_args()
-
-    return args
-
-
 async def main(
-    args: argparse.Namespace,
+    eval_config: EvalConfig,
     cache_dir: str,
     timestamp: str,
 ) -> dict[str, Any]:
@@ -290,42 +179,15 @@ async def main(
 
     start_time = time.time()
 
-    if sum([args.political_orientation, args.pregnancy, args.employment_gap]) > 1:
-        raise ValueError(
-            "Only one of political orientation, pregnancy, or employment gap can be true"
-        )
-
-    MAX_LENGTH = 2500
-    BATCH_SIZE_MULTIPLIER = 2
-
-    NO_NAMES = False
-
-    eval_config = EvalConfig(
-        inference_mode=args.inference_mode,
-        model_name="",
-        industry=args.industry,
-        mode=args.mode,
-        political_orientation=args.political_orientation,
-        pregnancy=args.pregnancy,
-        employment_gap=args.employment_gap,
-        anthropic_dataset=args.anthropic_dataset,
-        downsample=args.downsample,
-        system_prompt_filename=args.system_prompt_filename,
-        anti_bias_statement_file=args.anti_bias_statement_file,
-        no_names=NO_NAMES,
-    )
-
     # Set the seed for reproducibility
-    random_seed = eval_config.random_seed
-    random.seed(random_seed)
-    torch.manual_seed(random_seed)
+    random.seed(eval_config.random_seed)
+    torch.manual_seed(eval_config.random_seed)
 
     print("Loading dataset...")
     if eval_config.anthropic_dataset:
         df = dataset_setup.load_full_anthropic_dataset()
-        args.system_prompt_filename = "yes_no_anthropic.txt"
         eval_config.system_prompt_filename = "yes_no_anthropic.txt"
-        BATCH_SIZE_MULTIPLIER *= 4
+        eval_config.batch_size_multiplier = 8
     else:
         df = dataset_setup.load_raw_dataset()
 
@@ -347,46 +209,7 @@ async def main(
     print("Race:", df["Race"].value_counts())
     print("--------------------------------")
 
-    if args.job_description_file is not None:
-        job_descriptions = [args.job_description_file]
-    else:
-        job_descriptions = ["meta_job_description.txt", "base_description.txt"]
-        # job_descriptions = ["gm_job_description.txt"]
-        job_descriptions = ["meta_job_description.txt"]
-        # job_descriptions = ["short_meta_job_description.txt"]
-
-    if args.anti_bias_statement_file is None:
-        anti_bias_statement_files = [f"v{i}.txt" for i in range(0, 5)]
-        # anti_bias_statement_files = ["v0.txt", "v1.txt", "v3.txt", "v11.txt"]
-        # anti_bias_statement_files = ["v11.txt"]
-        anti_bias_statement_files = ["v2.txt"]
-    else:
-        anti_bias_statement_files = [args.anti_bias_statement_file]
-
-    if args.model_name is None:
-        model_names = [
-            "google/gemma-2-2b-it",
-            # "google/gemma-2-27b-it",
-            # "google/gemma-2-9b-it",
-            # "mistralai/Ministral-8B-Instruct-2410",
-            # "mistralai/Mistral-Small-24B-Instruct-2501",
-            # "deepseek/deepseek-r1",
-            # "openai/gpt-4o-2024-08-06",
-            # "deepseek/deepseek-r1-distill-llama-70b"
-            # "openai/o1-mini-2024-09-12",
-            # "openai/o1-mini",
-            # "openai/o1"
-            # "x-ai/grok-3-mini-beta"
-            # "qwen/qwq-32b",
-            # "anthropic/claude-3.7-sonnet"
-            # "anthropic/claude-3.7-sonnet:thinking",
-            # "qwen/qwen2.5-32b-instruct",
-            # "openai/gpt-4o-mini",
-        ]
-    else:
-        model_names = [args.model_name]
-
-    os.makedirs(args.score_output_dir, exist_ok=True)
+    os.makedirs(eval_config.score_output_dir, exist_ok=True)
 
     if (
         eval_config.system_prompt_filename == "yes_no_cot.txt"
@@ -396,45 +219,16 @@ async def main(
     else:
         max_completion_tokens = 5
 
-    if model_names[0] in REASONING_MODELS:
-        assert len(model_names) == 1
+    if eval_config.model_name in REASONING_MODELS:
         max_completion_tokens = None
 
-    max_completion_tokens = None
-
-    if args.inference_mode == InferenceMode.GPU_INFERENCE.value:
+    if eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
         # We load this here because it often takes ~1 minute to load
         import vllm
 
-        assert len(model_names) == 1
-        vllm_model = vllm.LLM(model=model_names[0], dtype="bfloat16")
-
-    general_bools = [True, False]
-    general_bools = [False]
+        vllm_model = vllm.LLM(model=eval_config.model_name, dtype="bfloat16")
 
     add_activations = True
-
-    # Determine scales and bias_types based on inference_mode
-    if (
-        args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
-        or args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value
-        or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
-    ):
-        scales = [1.0, 2.0, 5.0]
-        scales = [0.0]
-        bias_types = ["political_orientation", "gender", "race"]
-        bias_types = ["gender", "race"]
-
-        # override bias_types and scales if provided
-        if args.bias_type is not None:
-            bias_types = [args.bias_type]
-        if args.scale is not None:
-            scales = [args.scale]
-
-        intervention_type = "clamping"
-    else:
-        scales = [0.0]
-        bias_types = ["N/A"]
 
     all_results = {}
 
@@ -444,20 +238,19 @@ async def main(
         model_name,
         scale,
         bias_type,
-        general_bool,
     ) in itertools.product(
-        anti_bias_statement_files,
-        job_descriptions,
-        model_names,
-        scales,
-        bias_types,
-        general_bools,
+        eval_config.anti_bias_statement_files_to_iterate,
+        eval_config.job_description_files_to_iterate,
+        eval_config.model_names_to_iterate,
+        eval_config.scales_to_iterate,
+        eval_config.bias_types_to_iterate,
     ):
         eval_config.anti_bias_statement_file = anti_bias_statement_file
         eval_config.job_description_file = job_description
         eval_config.model_name = model_name
         eval_config.scale = scale
         eval_config.bias_type = bias_type
+
         print(f"Running with anti-bias statement: {anti_bias_statement_file}")
         print(f"Running with job description: {job_description}")
         print(f"Running with model: {model_name}")
@@ -471,31 +264,17 @@ async def main(
         job_description_length = len(tokenizer.encode(job_description_text))
         print(f"Job description length: {job_description_length}")
 
-        total_max_length = MAX_LENGTH + job_description_length
+        total_max_length = eval_config.max_length + job_description_length
         print(f"Total max length: {total_max_length}")
 
-        if (
-            args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value
-            or args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value
-            or args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
-        ):
-            if bias_type == "political_orientation":
-                args.political_orientation = True
-                eval_config.political_orientation = True
-            elif bias_type == "gender" or bias_type == "race":
-                args.political_orientation = False
-                eval_config.political_orientation = False
-            else:
-                raise ValueError(f"Unhandled bias type: {bias_type}")
-
-        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}_general_{str(general_bool)}.pkl".replace(
+        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
             ".txt", ""
         ).replace("/", "_")
 
         temp_results_folder = os.path.join(
-            args.inference_mode, model_name.replace("/", "_")
+            eval_config.inference_mode, model_name.replace("/", "_")
         )
-        output_dir = os.path.join(args.score_output_dir, temp_results_folder)
+        output_dir = os.path.join(eval_config.score_output_dir, temp_results_folder)
         os.makedirs(output_dir, exist_ok=True)
         everything_output_dir = os.path.join("all_results", temp_results_folder)
         os.makedirs(everything_output_dir, exist_ok=True)
@@ -508,25 +287,27 @@ async def main(
 
         if (
             os.path.exists(temp_results_filepath)
-            and not args.overwrite_existing_results
+            and not eval_config.overwrite_existing_results
         ):
             print(f"Skipping {temp_results_filename} because it already exists")
             continue
 
-        if args.anthropic_dataset:
-            prompts = create_all_prompts_anthropic(
-                df, args, eval_config, add_system_prompt=True
+        if eval_config.anthropic_dataset:
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
+                df, eval_config, add_system_prompt=True
             )
         else:
-            prompts = create_all_prompts_hiring_bias(df, args, eval_config)
+            prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
+                df, eval_config
+            )
 
         gc.collect()
         torch.cuda.empty_cache()
 
-        if args.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
+        if eval_config.inference_mode == InferenceMode.GPU_FORWARD_PASS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * BATCH_SIZE_MULTIPLIER
+                * eval_config.batch_size_multiplier
             )
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
@@ -535,10 +316,10 @@ async def main(
                 max_length=total_max_length,
                 collect_activations=add_activations,
             )
-        elif args.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
+        elif eval_config.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * BATCH_SIZE_MULTIPLIER
+                * eval_config.batch_size_multiplier
             )
 
             # ablation_features = intervention_hooks.lookup_sae_features(
@@ -553,7 +334,7 @@ async def main(
                 model_name,
                 bias_type,
                 batch_size=batch_size,
-                max_length=MAX_LENGTH,
+                max_length=eval_config.max_length,
             )
 
             print(ablation_features)
@@ -569,21 +350,21 @@ async def main(
                 model_name,
                 batch_size=batch_size,
                 ablation_features=ablation_features,
-                ablation_type=intervention_type,
+                ablation_type=eval_config.sae_intervention_type,
                 scale=scale,
                 max_length=total_max_length,
             )
-        elif args.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value:
+        elif eval_config.inference_mode == InferenceMode.PROJECTION_ABLATIONS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * BATCH_SIZE_MULTIPLIER
+                * eval_config.batch_size_multiplier
             )
 
             ablation_vectors = model_inference.get_ablation_vectors(
                 model_name,
                 bias_type,
                 batch_size=batch_size,
-                max_length=MAX_LENGTH,
+                max_length=eval_config.max_length,
             )
 
             results = model_inference.run_single_forward_pass_transformers(
@@ -594,30 +375,33 @@ async def main(
                 ablation_type="projection_ablations",
                 max_length=total_max_length,
             )
-        elif args.inference_mode == InferenceMode.GPU_INFERENCE.value:
+        elif eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
                 max_new_tokens=max_completion_tokens,
                 model=vllm_model,
             )
-        elif args.inference_mode == InferenceMode.LOGIT_LENS.value:
+        elif eval_config.inference_mode == InferenceMode.LOGIT_LENS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * BATCH_SIZE_MULTIPLIER
+                * eval_config.batch_size_multiplier
             )
             results = logit_lens.run_logit_lens(
                 prompts,
                 model_name,
-                add_final_layer=general_bool,
+                add_final_layer=False,
                 batch_size=batch_size,
                 max_length=total_max_length,
                 use_tuned_lenses=True,
             )
-        elif args.inference_mode == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value:
+        elif (
+            eval_config.inference_mode
+            == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
+        ):
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * BATCH_SIZE_MULTIPLIER
+                * eval_config.batch_size_multiplier
             )
 
             ablation_features = intervention_hooks.lookup_sae_features(
@@ -639,15 +423,15 @@ async def main(
             results = logit_lens.run_logit_lens_with_intervention(
                 prompts,
                 model_name,
-                add_final_layer=general_bool,
+                add_final_layer=False,
                 batch_size=batch_size,
                 max_length=total_max_length,
                 ablation_features=ablation_features,
-                ablation_type=intervention_type,
+                ablation_type=eval_config.sae_intervention_type,
                 scale=scale,
                 use_tuned_lenses=True,
             )
-        elif args.inference_mode == InferenceMode.OPEN_ROUTER.value:
+        elif eval_config.inference_mode == InferenceMode.OPEN_ROUTER.value:
             # Use the lookup table if the model name is present
             api_model_name = OPENROUTER_NAME_LOOKUP.get(model_name, model_name)
             results = await model_inference.run_model_inference_openrouter(
@@ -655,46 +439,44 @@ async def main(
             )
         else:
             # This case should not be reachable due to argparse choices
-            raise ValueError(f"Unhandled inference mode: {args.inference_mode}")
+            raise ValueError(f"Unhandled inference mode: {eval_config.inference_mode}")
 
         run_results = {
             "model_name": eval_config.model_name,
-            "anti_bias_statement": args.anti_bias_statement_file,
+            "anti_bias_statement": eval_config.anti_bias_statement_file,
             "job_description": job_description,
-            "eval_config": asdict(eval_config),
+            "eval_config": eval_config.model_dump(),
         }
 
-        if (
-            InferenceMode.LOGIT_LENS.value not in args.inference_mode
-            and InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
-            not in args.inference_mode
-        ):
+        if eval_config.inference_mode not in [
+            InferenceMode.LOGIT_LENS.value,
+            InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value,
+        ]:
             # Quick and dirty check to see if prompts are the same from run to run
             total_len = 0
             for result in results:
                 total_len += len(result.prompt)
             print(f"Total length of prompts: {total_len}")
 
-            bias_scores = evaluate_bias(
-                results, system_prompt_filename=args.system_prompt_filename
+            bias_scores = hiring_bias_prompts.evaluate_bias(
+                results, system_prompt_filename=eval_config.system_prompt_filename
             )
             print(bias_scores)
 
             run_results["bias_scores"] = bias_scores
 
-            if args.inference_mode in [
+            if eval_config.inference_mode in [
                 InferenceMode.GPU_FORWARD_PASS.value,
                 InferenceMode.PERFORM_ABLATIONS.value,
                 InferenceMode.PROJECTION_ABLATIONS.value,
             ]:
-                bias_probs = evaluate_bias_probs(results)
+                bias_probs = hiring_bias_prompts.evaluate_bias_probs(results)
                 print("\n\n\n", bias_probs)
                 run_results["bias_probs"] = bias_probs
             else:
                 bias_probs = None
 
             save_evaluation_results(
-                args,
                 model_name,
                 df,
                 results,
@@ -704,10 +486,10 @@ async def main(
                 timestamp,
                 eval_config,
             )
-        elif (
-            InferenceMode.LOGIT_LENS.value in args.inference_mode
-            or InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value in args.inference_mode
-        ):
+        elif eval_config.inference_mode in [
+            InferenceMode.LOGIT_LENS.value,
+            InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value,
+        ]:
             run_results["logit_lens"] = results
 
         with open(temp_results_filepath, "wb") as f:
@@ -727,6 +509,17 @@ async def main(
     return all_results
 
 
+def parse_overrides(pairs: list[str]) -> dict:
+    """Convert ["key=val", "nested.foo=3"] to a flat dict understood by Pydantic."""
+    out: dict[str, str] = {}
+    for p in pairs:
+        if "=" not in p:
+            raise ValueError(f"Override '{p}' expects KEY=VALUE")
+        k, v = p.split("=", 1)
+        out[k] = v
+    return out
+
+
 if __name__ == "__main__":
     # Setup moved here
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -737,12 +530,34 @@ if __name__ == "__main__":
     sys.stdout = Logger(log_file)
 
     try:
-        args = parse_args()
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--config",
+            required=True,
+            default="configs/base_experiment.yaml",
+            help="YAML file with experiment cfg",
+        )
+        parser.add_argument(
+            "--override",
+            nargs="*",
+            default=[],
+            help="Ad-hoc overrides key=val (YAML typed)",
+        )
+        args = parser.parse_args()
+
+        cfg = EvalConfig.from_yaml(args.config)
+
+        if args.override:
+            import yaml  # local import to avoid mandatory dependency for non-users
+
+            overrides = {
+                k: yaml.safe_load(v) for k, v in parse_overrides(args.override).items()
+            }
+            cfg = cfg.model_copy(update=overrides)
+
+        print(cfg.model_dump())
         # Pass args, cache_dir, and timestamp to main
-        results = asyncio.run(main(args, cache_dir, timestamp))
-        # Optionally print or process returned results here
-        # print("Final results dictionary returned by main:")
-        # print(json.dumps(results, indent=4))
+        results = asyncio.run(main(cfg, cache_dir, timestamp))
     finally:
         # Ensure stdout is reset and logger is closed even if errors occur
         sys.stdout.log.close()

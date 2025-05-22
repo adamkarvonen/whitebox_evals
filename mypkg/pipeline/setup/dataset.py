@@ -7,11 +7,10 @@ from mypkg.pipeline.setup.config import load_config
 
 def load_raw_dataset():
     """
-    Loads the preprocessed CSV from the path specified in the config.
+    Loads the preprocessed CSV.
     Returns a Pandas DataFrame with all resumes and metadata.
     """
-    config = load_config()
-    dataset_path = config["dataset"]["path"]
+    dataset_path = "data/resume/selected_cats_resumes.csv"
     df = pd.read_csv(dataset_path)
     return df
 

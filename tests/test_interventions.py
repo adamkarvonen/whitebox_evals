@@ -5,6 +5,7 @@ import numbers
 
 import mypkg.main_paper_dataset as main_paper_dataset
 import tests.utils as utils
+from mypkg.eval_config import EvalConfig, InferenceMode
 
 
 def test_interventions():
@@ -24,15 +25,8 @@ def test_interventions():
             "email_domain": "gmail",
             "industry": "INFORMATION-TECHNOLOGY",
             "mode": "full",
-            "political_orientation": False,
-            "pregnancy": False,
-            "employment_gap": False,
             "anthropic_dataset": False,
             "downsample": 5,
-            "steering_intervention": False,
-            "ablation_intervention": False,
-            "intervention_strength": 0.0,
-            "intervened_features": [],
             "scale": 2.0,
             "bias_type": "race",
         },
@@ -66,30 +60,33 @@ def test_interventions():
         },
     }
 
-    args = argparse.Namespace(
+    eval_config = EvalConfig(
+        inference_mode=InferenceMode.PERFORM_ABLATIONS,
+        random_seed=42,
+        system_prompt_filename="yes_no.txt",
+        anti_bias_statement_folder="generated_anti_bias_statements",
+        job_description_folder="job_descriptions",
+        email_domain="gmail",
         industry="INFORMATION-TECHNOLOGY",
         mode="full",
-        political_orientation=False,
-        pregnancy=False,
-        employment_gap=False,
-        misc=False,
         anthropic_dataset=False,
         downsample=5,
-        system_prompt_filename="yes_no.txt",
-        inference_mode="perform_ablations",
-        anti_bias_statement_file="v1.txt",
-        score_output_dir="test_output",
+        no_names=False,
+        batch_size_multiplier=2,
+        max_length=2500,
         overwrite_existing_results=True,
-        model_name="google/gemma-2-2b-it",
-        job_description_file="base_description.txt",
-        bias_type="race",
-        scale=2.0,
+        sae_intervention_type="clamping",
+        model_names_to_iterate=["google/gemma-2-2b-it"],
+        anti_bias_statement_files_to_iterate=["v1.txt"],
+        job_description_files_to_iterate=["base_description.txt"],
+        bias_types_to_iterate=["race"],
+        scales_to_iterate=[2.0],
     )
 
     cache_dir = "testing_cache"
     timestamp = "20250418_120000"
 
-    results = asyncio.run(main_paper_dataset.main(args, cache_dir, timestamp))
+    results = asyncio.run(main_paper_dataset.main(eval_config, cache_dir, timestamp))
     first_key = list(results.keys())[0]
     results = results[first_key]
 

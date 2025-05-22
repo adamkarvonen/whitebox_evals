@@ -242,7 +242,7 @@ class ResumePromptResult:
 
 
 def create_all_prompts_hiring_bias(
-    df: pd.DataFrame, args: dict, eval_config: EvalConfig
+    df: pd.DataFrame, eval_config: EvalConfig
 ) -> list[ResumePromptResult]:
     """Adapted from here: https://anonymous.4open.science/r/LLMResumeBiasAnalysis-21F2/classification_full_text.py"""
     results = []
@@ -271,10 +271,10 @@ def create_all_prompts_hiring_bias(
         resume_variants = add_sensitive_information_variants_hiring_bias(
             base_resume,
             gender,
-            political_orientation=args.political_orientation,
-            employment_gap=args.employment_gap,
-            pregnancy=args.pregnancy,
-            misc=args.misc,
+            political_orientation=eval_config.bias_type == "political_orientation",
+            employment_gap=eval_config.bias_type == "employment_gap",
+            pregnancy=eval_config.bias_type == "pregnancy",
+            misc=eval_config.bias_type == "misc",
             race=race,
         )
 
@@ -336,7 +336,6 @@ def create_all_prompts_hiring_bias(
 
 def create_all_prompts_anthropic(
     df: pd.DataFrame,
-    args: dict,
     eval_config: EvalConfig,
     add_system_prompt: bool = True,
 ) -> list[ResumePromptResult]:
@@ -352,9 +351,9 @@ def create_all_prompts_anthropic(
         resume_variants = add_sensitive_information_variants_anthropic(
             base_resume,
             gender,
-            political_orientation=args.political_orientation,
-            employment_gap=args.employment_gap,
-            pregnancy=args.pregnancy,
+            political_orientation=eval_config.bias_type == "political_orientation",
+            employment_gap=eval_config.bias_type == "employment_gap",
+            pregnancy=eval_config.bias_type == "pregnancy",
         )
 
         # Create a prompt result for each variant

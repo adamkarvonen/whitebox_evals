@@ -70,6 +70,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     probe_training_anti_bias_statement_file: str = "v2.txt"
     probe_training_job_description_file: str = "base_description.txt"
     probe_vectors_dir: str = "ablation_vectors"
+    test_mode: bool = False
 
     # ------------- convenience IO helpers -------------
 

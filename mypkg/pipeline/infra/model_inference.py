@@ -866,10 +866,12 @@ def get_model_activations(
 def compute_mean_activations_per_prompt(
     model: AutoModelForCausalLM,
     model_inputs: dict[str, torch.Tensor],
-    labels: torch.Tensor,
+    race_labels: torch.Tensor,
+    gender_labels: torch.Tensor,
+    political_orientation_labels: Optional[torch.Tensor],
     chosen_layers: list[int],
     final_token_only: bool = False,
-) -> dict[int, tuple[torch.Tensor, torch.Tensor]]:
+) -> dict[int, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
     # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
     submodules = [model_utils.get_submodule(model, i) for i in chosen_layers]
@@ -881,48 +883,59 @@ def compute_mean_activations_per_prompt(
     for i, j in enumerate(chosen_layers):
         acts_LD[j] = activations_BLD[submodules[i]]
 
-    all_acts_BD = {}
+    all_acts_by_bias_type = {}
+
+    # Process each bias type
+    bias_types_and_labels = [
+        ("race", race_labels),
+        ("gender", gender_labels),
+    ]
+
+    if political_orientation_labels is not None:
+        bias_types_and_labels.append(
+            ("political_orientation", political_orientation_labels)
+        )
 
     for j in chosen_layers:
         layer_acts_BLD = acts_LD[j]
         layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
 
         if final_token_only:
-            raise NotImplementedError("Final token only not implemented for now")
             layer_acts_BLD = layer_acts_BLD[:, -1:, :]
+            raise NotImplementedError("Final token only not implemented for now")
 
-        # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
+        layer_bias_acts = {}
 
-        pos_mask_B = labels == 1
-        neg_mask_B = labels == 0
+        for bias_type, labels in bias_types_and_labels:
+            pos_mask_B = labels == 1
+            neg_mask_B = labels == 0
 
-        pos_acts_BLD = layer_acts_BLD[pos_mask_B]
-        neg_acts_BLD = layer_acts_BLD[neg_mask_B]
+            pos_acts_BLD = layer_acts_BLD[pos_mask_B]
+            neg_acts_BLD = layer_acts_BLD[neg_mask_B]
 
-        # TODO: Better way to mean over the batch dimension?
-        # pos_attn_mask_B = model_inputs["attention_mask"][pos_mask_B]
-        # neg_attn_mask_B = model_inputs["attention_mask"][neg_mask_B]
+            pos_acts_BD = einops.reduce(
+                pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
+            )
+            neg_acts_BD = einops.reduce(
+                neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
+            )
 
-        # num_pos_tokens_B = pos_attn_mask_B.sum(dim=1)
-        # num_neg_tokens_B = neg_attn_mask_B.sum(dim=1)
+            if pos_mask_B.sum().item() == 0:
+                assert neg_mask_B.sum().item() > 0, (
+                    f"No positive or negative examples for {bias_type}"
+                )
+                pos_acts_BD = None
+            elif neg_mask_B.sum().item() == 0:
+                assert pos_mask_B.sum().item() > 0, (
+                    f"No positive or negative examples for {bias_type}"
+                )
+                neg_acts_BD = None
 
-        pos_acts_BD = einops.reduce(
-            pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
-        )
-        neg_acts_BD = einops.reduce(
-            neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
-        )
+            layer_bias_acts[bias_type] = (pos_acts_BD, neg_acts_BD)
 
-        if pos_mask_B.sum().item() == 0:
-            assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
-            pos_acts_BD = None
-        elif neg_mask_B.sum().item() == 0:
-            assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
-            neg_acts_BD = None
+        all_acts_by_bias_type[j] = layer_bias_acts
 
-        all_acts_BD[j] = (pos_acts_BD, neg_acts_BD)
-
-    return all_acts_BD
+    return all_acts_by_bias_type
 
 
 @torch.no_grad()
@@ -930,28 +943,43 @@ def get_pos_neg_activations(
     model: AutoModelForCausalLM,
     dataloader: DataLoader,
     chosen_layers: list[int],
-) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor]]:
+) -> tuple[dict[int, dict[str, torch.Tensor]], dict[int, dict[str, torch.Tensor]]]:
     pos_acts_BD = {}
     neg_acts_BD = {}
+
+    # Initialize nested structure for each layer and bias type
     for j in chosen_layers:
-        pos_acts_BD[j] = []
-        neg_acts_BD[j] = []
+        pos_acts_BD[j] = {"race": [], "gender": [], "political_orientation": []}
+        neg_acts_BD[j] = {"race": [], "gender": [], "political_orientation": []}
+
+    has_political_orientation = False
 
     for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
-            batch
-        )
+        (
+            input_ids,
+            attention_mask,
+            unused_labels,
+            idx_batch,
+            resume_prompt_results_batch,
+        ) = batch
 
         race_labels = []
         gender_labels = []
         political_orientation_labels = []
+
         for resume_prompt_result in resume_prompt_results_batch:
             resume_prompt_result: hiring_bias_prompts.ResumePromptResult
             assert resume_prompt_result.race.lower() in ["white", "black"]
             assert resume_prompt_result.gender.lower() in ["male", "female"]
-            race_labels.append(resume_prompt_result.race.lower() == "black")
-            gender_labels.append(resume_prompt_result.gender.lower() == "female")
+
+            # Convert boolean to 0/1
+            race_labels.append(1 if resume_prompt_result.race.lower() == "black" else 0)
+            gender_labels.append(
+                1 if resume_prompt_result.gender.lower() == "female" else 0
+            )
+
             if resume_prompt_result.political_orientation_added:
+                has_political_orientation = True
                 print(
                     resume_prompt_result.politics,
                     resume_prompt_result.political_orientation_added,
@@ -961,32 +989,63 @@ def get_pos_neg_activations(
                     "republican",
                 ]
                 political_orientation_labels.append(
-                    resume_prompt_result.politics.lower() == "democrat"
+                    1 if resume_prompt_result.politics.lower() == "democrat" else 0
                 )
+
+        # Convert to tensors
+        race_labels = torch.tensor(race_labels, device=input_ids.device)
+        gender_labels = torch.tensor(gender_labels, device=input_ids.device)
+        political_orientation_labels = (
+            torch.tensor(political_orientation_labels, device=input_ids.device)
+            if political_orientation_labels
+            else None
+        )
+
+        bias_types = ["race", "gender"]
+        if political_orientation_labels is not None:
+            bias_types.append("political_orientation")
+            raise ValueError("Political orientation not implemented for now")
 
         model_inputs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
         }
 
-        batch_acts_BD = compute_mean_activations_per_prompt(
+        batch_acts_by_bias = compute_mean_activations_per_prompt(
             model,
             model_inputs,
-            labels,
+            race_labels,
+            gender_labels,
+            political_orientation_labels,
             chosen_layers,
         )
 
         for j in chosen_layers:
-            batch_pos_acts_BD = batch_acts_BD[j][0]
-            batch_neg_acts_BD = batch_acts_BD[j][1]
+            for bias_type in bias_types:
+                batch_pos_acts_BD = batch_acts_by_bias[j][bias_type][0]
+                batch_neg_acts_BD = batch_acts_by_bias[j][bias_type][1]
 
-            if batch_pos_acts_BD is not None:
-                pos_acts_BD[j].append(batch_pos_acts_BD.to(torch.float32))
-            if batch_neg_acts_BD is not None:
-                neg_acts_BD[j].append(batch_neg_acts_BD.to(torch.float32))
+                if batch_pos_acts_BD is not None:
+                    pos_acts_BD[j][bias_type].append(
+                        batch_pos_acts_BD.to(torch.float32)
+                    )
+                if batch_neg_acts_BD is not None:
+                    neg_acts_BD[j][bias_type].append(
+                        batch_neg_acts_BD.to(torch.float32)
+                    )
 
-    pos_acts_BD = {j: torch.cat(pos_acts_BD[j], dim=0) for j in chosen_layers}
-    neg_acts_BD = {j: torch.cat(neg_acts_BD[j], dim=0) for j in chosen_layers}
+    for j in chosen_layers:
+        for bias_type in bias_types:
+            pos_acts_BD[j][bias_type] = torch.cat(pos_acts_BD[j][bias_type], dim=0)
+            neg_acts_BD[j][bias_type] = torch.cat(neg_acts_BD[j][bias_type], dim=0)
+
+    # Remove political_orientation if it was never used
+    if not has_political_orientation:
+        for j in chosen_layers:
+            if "political_orientation" in pos_acts_BD[j]:
+                del pos_acts_BD[j]["political_orientation"]
+            if "political_orientation" in neg_acts_BD[j]:
+                del neg_acts_BD[j]["political_orientation"]
 
     return pos_acts_BD, neg_acts_BD
 
@@ -1000,73 +1059,85 @@ def get_probes(
     early_stopping_patience: int,
     max_iter: int,
     probe_batch_size: int,
-) -> dict[int, dict[str, torch.Tensor]]:
+    testing: bool = False,
+) -> dict[int, dict[str, dict[str, torch.Tensor]]]:
     pos_acts_BD, neg_acts_BD = get_pos_neg_activations(model, dataloader, chosen_layers)
 
-    probe_dirs = {}  # layer → unit vector (D,)
-    probe_accs = {}  # layer → test accuracy
+    probe_dirs = {}  # layer → bias_type → unit vector (D,)
+    probe_accs = {}  # layer → bias_type → test accuracy
 
     for layer in pos_acts_BD:
-        X = torch.cat([pos_acts_BD[layer], neg_acts_BD[layer]], 0)
-        y = torch.cat(
-            [
-                torch.ones(pos_acts_BD[layer].shape[0], dtype=torch.long),
-                torch.zeros(neg_acts_BD[layer].shape[0], dtype=torch.long),
-            ],
-            0,
-        )
+        probe_dirs[layer] = {}
+        probe_accs[layer] = {}
 
-        # 3. 80/20 split (torch only) --------------------------------------------
-        N = X.size(0)
-        idx = torch.randperm(N)
-        split = int(0.8 * N)
-        train_idx, test_idx = idx[:split], idx[split:]
-        X_train, y_train = X[train_idx], y[train_idx]
-        X_test, y_test = X[test_idx], y[test_idx]
+        # Get bias types available for this layer
+        bias_types = list(pos_acts_BD[layer].keys())
 
-        # 4. choose a trainer ------------------------------------------------------
-        # ---- sklearn path (CPU) ----
-        # sk_probe, sk_acc = probe_training.train_sklearn_probe(
-        #     X_train, y_train, X_test, y_test,
-        #     max_iter=1000, C=1.0, verbose=False,
-        # )
-        # w_sk   = torch.from_numpy(sk_probe.coef_.ravel()).float()
-        # dir_sk = w_sk / w_sk.norm()
+        for bias_type in bias_types:
+            if bias_type not in neg_acts_BD[layer]:
+                raise ValueError(
+                    f"Bias type {bias_type} not found in negative activations"
+                )
 
-        # ---- GPU path (comment in if you prefer) ----
-        gpu_probe, gpu_acc = probe_training.train_probe_gpu(
-            X_train.cuda(),
-            y_train.cuda(),
-            X_test.cuda(),
-            y_test.cuda(),
-            dim=X.size(1),
-            batch_size=probe_batch_size,
-            epochs=max_iter,
-            lr=lr,
-            weight_decay=weight_decay,
-            early_stopping_patience=early_stopping_patience,
-            verbose=False,
-        )
-        w_gpu = gpu_probe.net.weight.data.squeeze()
-        dir_gpu = w_gpu / w_gpu.norm()
+            X = torch.cat(
+                [pos_acts_BD[layer][bias_type], neg_acts_BD[layer][bias_type]], 0
+            )
+            y = torch.cat(
+                [
+                    torch.ones(
+                        pos_acts_BD[layer][bias_type].shape[0], dtype=torch.long
+                    ),
+                    torch.zeros(
+                        neg_acts_BD[layer][bias_type].shape[0], dtype=torch.long
+                    ),
+                ],
+                0,
+            )
 
-        probe_dirs[layer] = {"diff_acts_D": dir_gpu}
-        probe_accs[layer] = gpu_acc
-        print(f"layer {layer:2d}  acc {probe_accs[layer]:.3f}")
+            # 3. 80/20 split (torch only) --------------------------------------------
+            N = X.size(0)
+            if testing:
+                torch.manual_seed(42)
+            idx = torch.randperm(N)
+            split = int(0.8 * N)
+            train_idx, test_idx = idx[:split], idx[split:]
+            X_train, y_train = X[train_idx], y[train_idx]
+            X_test, y_test = X[test_idx], y[test_idx]
+
+            # 4. train probe ------------------------------------------------------
+            gpu_probe, gpu_acc = probe_training.train_probe_gpu(
+                X_train.cuda(),
+                y_train.cuda(),
+                X_test.cuda(),
+                y_test.cuda(),
+                dim=X.size(1),
+                batch_size=probe_batch_size,
+                epochs=max_iter,
+                lr=lr,
+                weight_decay=weight_decay,
+                early_stopping_patience=early_stopping_patience,
+                verbose=False,
+            )
+            w_gpu = gpu_probe.net.weight.data.squeeze()
+            dir_gpu = w_gpu / w_gpu.norm()
+
+            probe_dirs[layer][bias_type] = {"diff_acts_D": dir_gpu}
+            probe_accs[layer][bias_type] = gpu_acc
+            print(f"layer {layer:2d} {bias_type:20s} acc {gpu_acc:.3f}")
 
     return probe_dirs
 
 
 def get_ablation_vectors(
     model_name: str,
-    bias_type: str,
+    bias_type: str,  # This parameter might be ignored now since we train all bias types
     eval_config: EvalConfig,
     batch_size: int = 64,
     padding_side: str = "left",
     model: Optional[AutoModelForCausalLM] = None,
-) -> dict[int, list[torch.Tensor]]:
+) -> dict[int, dict[str, list[torch.Tensor]]]:
     assert padding_side in ["left", "right"]
-    assert bias_type in ["gender", "race", "political_orientation"]
+    # Remove the bias_type assertion since we're training all types
 
     assert eval_config.probe_training_dataset_name in ["resumes", "anthropic"]
 
@@ -1074,14 +1145,16 @@ def get_ablation_vectors(
         batch_size *= 8
 
     os.makedirs(eval_config.probe_vectors_dir, exist_ok=True)
-    filename = f"ablation_features_{bias_type}_{model_name}_{eval_config.probe_training_dataset_name}_{eval_config.probe_training_downsample}.pt".replace(
+    # Update filename to not include specific bias type
+    filename = f"ablation_features_all_biases_{model_name}_{eval_config.probe_training_dataset_name}_{eval_config.probe_training_downsample}.pt".replace(
         "/", "_"
     )
     filename = os.path.join(eval_config.probe_vectors_dir, filename)
+
     if os.path.exists(filename) and not eval_config.probe_training_overwrite_previous:
         all_acts_D = torch.load(filename)
     else:
-        print("Computing ablation features")
+        print("Computing ablation features for all bias types")
         dtype = torch.bfloat16
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if model is None:
@@ -1091,7 +1164,6 @@ def get_ablation_vectors(
                 device_map="auto",
                 # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
             )
-        # tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         eval_config = EvalConfig(
             model_name=model_name,
@@ -1101,7 +1173,7 @@ def get_ablation_vectors(
             anti_bias_statement_file=eval_config.probe_training_anti_bias_statement_file,
             job_description_file=eval_config.probe_training_job_description_file,
             system_prompt_filename=eval_config.system_prompt_filename,
-            bias_type=bias_type,
+            bias_type=bias_type,  # This might not be needed anymore
         )
 
         if eval_config.probe_training_dataset_name == "resumes":
@@ -1121,22 +1193,13 @@ def get_ablation_vectors(
             )
             prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
 
+        # Process prompts - we still need bias_type for this function, might need refactoring
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
-                prompts, model_name, bias_type
+                prompts,
+                model_name,
+                "race",  # Dummy bias type since we extract all
             )
-        )
-
-        # Assert train_labels only contains 0s and 1s
-        assert all(label in [0, 1] for label in train_labels), (
-            "train_labels contains values other than 0 and 1"
-        )
-
-        # Assert number of 0s equals number of 1s
-        num_zeros = sum(1 for label in train_labels if label == 0)
-        num_ones = sum(1 for label in train_labels if label == 1)
-        assert num_zeros == num_ones, (
-            f"train_labels is not balanced: {num_zeros} zeros vs {num_ones} ones"
         )
 
         dataloader = data_utils.create_simple_dataloader(
@@ -1155,7 +1218,6 @@ def get_ablation_vectors(
         )
         chosen_layers = list(range(begin_layer, num_layers))
 
-        # all_acts_D = get_model_activations(model, dataloader, chosen_layers)
         all_acts_D = get_probes(
             model,
             dataloader,
@@ -1165,13 +1227,18 @@ def get_ablation_vectors(
             early_stopping_patience=eval_config.probe_training_early_stopping_patience,
             max_iter=eval_config.probe_training_max_iter,
             probe_batch_size=eval_config.probe_training_batch_size,
+            testing=eval_config.test_mode,
         )
 
         torch.save(all_acts_D, filename)
 
+    # Convert to the expected format: {layer: {bias_type: [vector]}}
     intervention_vectors = {}
 
     for layer in all_acts_D:
-        intervention_vectors[layer] = [all_acts_D[layer]["diff_acts_D"]]
+        intervention_vectors[layer] = []
+        # for bias_type in all_acts_D[layer]:
+        print(f"orig bias type : {bias_type}")
+        intervention_vectors[layer].append(all_acts_D[layer][bias_type]["diff_acts_D"])
 
     return intervention_vectors

@@ -15,17 +15,6 @@ from mypkg.eval_config import EvalConfig
 import mypkg.whitebox_infra.model_utils as model_utils
 
 
-# NOTE: I just use this in notebooks, otherwise args are populated from argparse
-@dataclass
-class HiringBiasArgs:
-    political_orientation: bool
-    employment_gap: bool
-    pregnancy: bool
-    race: bool
-    gender: bool
-    misc: bool
-
-
 def remove_resume_title(resume):
     title = re.findall(r"\b[A-Z]+\b", resume[:100])
     for t in title:
@@ -185,35 +174,6 @@ def filter_anthropic_df(df: pd.DataFrame) -> pd.DataFrame:
 
     df["Category"] = "INFORMATION-TECHNOLOGY"
 
-    return df
-
-
-def modify_anthropic_filled_templates(df):
-    """Change the anthropic templates to match the hiring bias prompts"""
-
-    def modify(text):
-        if "IT consultant" in text:
-            return text
-        # Replace role
-        text = text.replace("accounting", "")
-        text = text.replace("accountant", "IT consultant")
-        # Remove the word 'financial'
-        text = text.replace("financial ", "")
-
-        if "should our firm" in text:
-            parts = text.split("should our firm")
-            assert len(parts) == 2
-            parts[1] = " offer an interview?"
-            text = "should our firm".join(parts)
-
-        if "job offer" in text or "account" in text or "financial" in text:
-            print(text)
-            raise ValueError("Formatting error")
-
-        return text
-
-    df = df.copy()
-    df["filled_template"] = df["filled_template"].apply(modify)
     return df
 
 

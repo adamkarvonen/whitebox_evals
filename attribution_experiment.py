@@ -21,34 +21,48 @@ from mypkg.eval_config import EvalConfig
 
 
 def main(
-    args: argparse.Namespace,
-    bias_categories_to_test: Optional[list[str]] = None,
+    eval_config: EvalConfig,
+    chosen_layer_percentage: int,
+    output_dir: str,
     override_trainer_id: Optional[int] = None,
 ) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_name = args.model_name
-    # model_name = "google/gemma-2-9b-it"
-    # model_name = "google/gemma-2-27b-it"
     dtype = torch.bfloat16
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, device_map="auto"
+
+    eval_config.model_name = eval_config.model_names_to_iterate[0]
+    assert len(eval_config.model_names_to_iterate) == 1, "Only one model name allowed"
+
+    eval_config.anti_bias_statement_file = (
+        eval_config.anti_bias_statement_files_to_iterate[0]
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    assert len(eval_config.anti_bias_statement_files_to_iterate) == 1, (
+        "Only one anti-bias statement file allowed"
+    )
+
+    eval_config.job_description_file = eval_config.job_description_files_to_iterate[0]
+    assert len(eval_config.job_description_files_to_iterate) == 1, (
+        "Only one job description file allowed"
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        eval_config.model_name, torch_dtype=dtype, device_map="auto"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(eval_config.model_name)
 
     trainer_id = 2
 
-    if model_name == "google/gemma-2-27b-it":
+    if eval_config.model_name == "google/gemma-2-27b-it":
         gradient_checkpointing = True
         batch_size = 1
         trainer_id = 131
-    elif model_name == "mistralai/Mistral-Small-24B-Instruct-2501":
+    elif eval_config.model_name == "mistralai/Mistral-Small-24B-Instruct-2501":
         gradient_checkpointing = False
         batch_size = 2
-    elif model_name == "google/gemma-2-2b-it":
+    elif eval_config.model_name == "google/gemma-2-2b-it":
         gradient_checkpointing = False
         batch_size = 1
         trainer_id = 65
-    elif model_name == "google/gemma-2-9b-it":
+    elif eval_config.model_name == "google/gemma-2-9b-it":
         gradient_checkpointing = False
         batch_size = 2
         trainer_id = 131
@@ -63,34 +77,25 @@ def main(
         model.config.use_cache = False
         model.gradient_checkpointing_enable()
 
-    chosen_layer_percentage = [args.chosen_layer_percentage]
+    chosen_layer_percentages = [chosen_layer_percentage]
 
     chosen_layers = []
-    for layer_percent in chosen_layer_percentage:
+    for layer_percent in chosen_layer_percentages:
         chosen_layers.append(
-            model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][layer_percent][
-                "layer"
-            ]
+            model_utils.MODEL_CONFIGS[eval_config.model_name]["layer_mappings"][
+                layer_percent
+            ]["layer"]
         )
 
     sae = model_utils.load_model_sae(
-        model_name, device, dtype, chosen_layer_percentage[0], trainer_id=trainer_id
+        eval_config.model_name,
+        device,
+        dtype,
+        chosen_layer_percentages[0],
+        trainer_id=trainer_id,
     )
 
     submodules = [model_utils.get_submodule(model, chosen_layers[0])]
-
-    eval_config = EvalConfig(
-        model_name=model_name,
-        political_orientation=True,
-        pregnancy=False,
-        employment_gap=False,
-        anthropic_dataset=False,
-        downsample=args.downsample,
-        inference_mode="gpu_forward_pass",
-        anti_bias_statement_file=args.anti_bias_statement_file,
-        job_description_file="base_description.txt",
-        system_prompt_filename="yes_no.txt",
-    )
 
     df = dataset_setup.load_raw_dataset()
 
@@ -107,24 +112,19 @@ def main(
     if downsample:
         df = dataset_setup.balanced_downsample(df, downsample, random_seed)
 
-    if bias_categories_to_test is None:
-        bias_categories_to_test = ["political_orientation", "gender", "race"]
-        # bias_categories_to_test = ["political_orientation"]
-        # bias_categories_to_test = ["gender"]
-
-    output_dir = os.path.join(args.output_dir, model_name.replace("/", "_"))
+    output_dir = os.path.join(output_dir, eval_config.model_name.replace("/", "_"))
     os.makedirs(output_dir, exist_ok=True)
     output_filename = os.path.join(
         output_dir,
-        f"{args.anti_bias_statement_file.replace('.txt', '')}_trainer_{trainer_id}_model_{model_name.replace('/', '_')}_layer_{chosen_layer_percentage[0]}_attrib_data.pt",
+        f"{eval_config.anti_bias_statement_file.replace('.txt', '')}_trainer_{trainer_id}_model_{eval_config.model_name.replace('/', '_')}_layer_{chosen_layer_percentages[0]}_attrib_data.pt",
     )
     all_data = {}
 
     all_data["config"] = {
-        "model_name": model_name,
+        "model_name": eval_config.model_name,
         "layer": chosen_layers[0],
-        "bias_categories": bias_categories_to_test,
-        "anti_bias_statement_file": args.anti_bias_statement_file,
+        "bias_categories": eval_config.bias_types_to_iterate,
+        "anti_bias_statement_file": eval_config.anti_bias_statement_file,
         "downsample": downsample,
         "random_seed": random_seed,
         "batch_size": batch_size,
@@ -133,23 +133,12 @@ def main(
     }
 
     # --- Loop over the bias categories ---
-    for bias_category in bias_categories_to_test:
-        args = hiring_bias_prompts.HiringBiasArgs(
-            political_orientation=bias_category == "political_orientation",
-            employment_gap=bias_category == "employment_gap",
-            pregnancy=bias_category == "pregnancy",
-            race=bias_category == "race",
-            gender=bias_category == "gender",
-            misc=bias_category == "misc",
-        )
-
-        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-            df, args, eval_config
-        )
+    for bias_category in eval_config.bias_types_to_iterate:
+        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(df, eval_config)
 
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
-                prompts, model_name, args
+                prompts, eval_config.model_name, bias_category
             )
         )
 
@@ -157,10 +146,10 @@ def main(
             train_texts,
             train_labels,
             train_resume_prompt_results,
-            model_name,
+            eval_config.model_name,
             device,
             batch_size=batch_size,
-            max_length=2500,
+            max_length=eval_config.max_length,
         )
 
         # Build the custom loss function
@@ -219,50 +208,50 @@ def main(
     return all_data
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Run attribution experiment with specified model and anti-bias statements."
-    )
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        default="mistralai/Ministral-8B-Instruct-2410",
-        help="Name of the Hugging Face model to use.",
-    )
-    parser.add_argument(
-        "--anti_bias_statement_file",
-        type=str,
-        default="v1.txt",
-        help="Path to the anti-bias statement file.",
-    )
-    parser.add_argument(
-        "--downsample",
-        type=int,
-        default=None,
-        help="Downsample the dataset to this number of samples.",
-    )
-    parser.add_argument(
-        "--chosen_layer_percentage",
-        type=int,
-        default=25,
-        help="Percentage of the model to use for the attribution experiment.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="attribution_results",
-        help="Output directory for the attribution results.",
-    )
+# def parse_args():
+#     parser = argparse.ArgumentParser(
+#         description="Run attribution experiment with specified model and anti-bias statements."
+#     )
+#     parser.add_argument(
+#         "--model_name",
+#         type=str,
+#         default="mistralai/Ministral-8B-Instruct-2410",
+#         help="Name of the Hugging Face model to use.",
+#     )
+#     parser.add_argument(
+#         "--anti_bias_statement_file",
+#         type=str,
+#         default="v1.txt",
+#         help="Path to the anti-bias statement file.",
+#     )
+#     parser.add_argument(
+#         "--downsample",
+#         type=int,
+#         default=None,
+#         help="Downsample the dataset to this number of samples.",
+#     )
+#     parser.add_argument(
+#         "--chosen_layer_percentage",
+#         type=int,
+#         default=25,
+#         help="Percentage of the model to use for the attribution experiment.",
+#     )
+#     parser.add_argument(
+#         "--output_dir",
+#         type=str,
+#         default="attribution_results",
+#         help="Output directory for the attribution results.",
+#     )
 
-    args = parser.parse_args()
+#     args = parser.parse_args()
 
-    return args
+#     return args
 
 
-if __name__ == "__main__":
-    """
-    Example usage:
-    python attribution_experiment.py --model_name "google/gemma-2-2b-it" --anti_bias_statement_file "v1.txt" --downsample 10 --output_dir "attribution_results"
-    """
-    args = parse_args()
-    main(args)
+# if __name__ == "__main__":
+#     """
+#     Example usage:
+#     python attribution_experiment.py --model_name "google/gemma-2-2b-it" --anti_bias_statement_file "v1.txt" --downsample 10 --output_dir "attribution_results"
+#     """
+#     args = parse_args()
+#     main(args)

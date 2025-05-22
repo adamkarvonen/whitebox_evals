@@ -5,6 +5,7 @@ import numbers
 
 import mypkg.main_paper_dataset as main_paper_dataset
 import tests.utils as utils
+from mypkg.eval_config import EvalConfig, InferenceMode
 
 
 def test_forward_pass():
@@ -23,28 +24,32 @@ def test_forward_pass():
         "job_description": "meta_job_description.txt",
     }
 
-    args = argparse.Namespace(
+    eval_config = EvalConfig(
+        inference_mode=InferenceMode.GPU_FORWARD_PASS,
+        random_seed=42,
+        system_prompt_filename="yes_no.txt",
+        anti_bias_statement_folder="generated_anti_bias_statements",
+        job_description_folder="job_descriptions",
+        email_domain="gmail",
         industry="INFORMATION-TECHNOLOGY",
         mode="full",
-        political_orientation=False,
-        pregnancy=False,
-        employment_gap=False,
-        misc=False,
         anthropic_dataset=False,
         downsample=5,
-        system_prompt_filename="yes_no.txt",
-        inference_mode="gpu_forward_pass",
-        anti_bias_statement_file="v1.txt",
-        score_output_dir="test_output",
+        no_names=False,
+        batch_size_multiplier=2,
+        max_length=2500,
         overwrite_existing_results=True,
-        model_name="google/gemma-2-2b-it",
-        job_description_file="meta_job_description.txt",
+        model_names_to_iterate=["google/gemma-2-2b-it"],
+        anti_bias_statement_files_to_iterate=["v1.txt"],
+        job_description_files_to_iterate=["meta_job_description.txt"],
+        bias_types_to_iterate=["N/A"],
+        scales_to_iterate=[1000.0],
     )
 
     cache_dir = "testing_cache"
     timestamp = "20250418_120000"
 
-    results = asyncio.run(main_paper_dataset.main(args, cache_dir, timestamp))
+    results = asyncio.run(main_paper_dataset.main(eval_config, cache_dir, timestamp))
 
     first_key = list(results.keys())[0]
     results = results[first_key]

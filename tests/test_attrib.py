@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 import attribution_experiment
+from mypkg.eval_config import EvalConfig, InferenceMode
 
 
 def test_attrib():
@@ -89,16 +90,33 @@ def test_attrib():
 
     bias_category = "gender"
 
-    args = argparse.Namespace(
-        model_name="google/gemma-2-2b-it",
-        anti_bias_statement_file="v1.txt",
+    eval_config = EvalConfig(
+        inference_mode=InferenceMode.GPU_FORWARD_PASS,
+        random_seed=42,
+        system_prompt_filename="yes_no.txt",
+        anti_bias_statement_folder="generated_anti_bias_statements",
+        job_description_folder="job_descriptions",
+        email_domain="gmail",
+        industry="INFORMATION-TECHNOLOGY",
+        mode="full",
+        anthropic_dataset=False,
         downsample=5,
-        output_dir="test_attribution_results",
-        chosen_layer_percentage=25,
+        no_names=False,
+        batch_size_multiplier=2,
+        max_length=2500,
+        overwrite_existing_results=True,
+        model_names_to_iterate=["google/gemma-2-2b-it"],
+        anti_bias_statement_files_to_iterate=["v1.txt"],
+        job_description_files_to_iterate=["base_description.txt"],
+        bias_types_to_iterate=[bias_category],
+        scales_to_iterate=[1000.0],
     )
 
     all_test_data = attribution_experiment.main(
-        args, bias_categories_to_test=[bias_category], override_trainer_id=16
+        eval_config,
+        chosen_layer_percentage=25,
+        output_dir="test_attribution_results",
+        override_trainer_id=16,
     )
 
     test_data = all_test_data[bias_category]

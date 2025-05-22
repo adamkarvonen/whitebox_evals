@@ -75,9 +75,7 @@ def preprocess_and_save():
     modified_df = original_df.loc[original_df.index.repeat(4)].reset_index(drop=True)
 
     # Assign race/gender in a repeating pattern
-    race_values = ["White", "African_American", "White", "African_American"] * len(
-        original_df
-    )
+    race_values = ["White", "Black", "White", "Black"] * len(original_df)
     gender_values = ["Female", "Female", "Male", "Male"] * len(original_df)
     modified_df["Race"] = race_values
     modified_df["Gender"] = gender_values
@@ -85,9 +83,9 @@ def preprocess_and_save():
     # Fill in first/last names + political orientation
     combinations = [
         ("White", "Female"),
-        ("African_American", "Female"),
+        ("Black", "Female"),
         ("White", "Male"),
-        ("African_American", "Male"),
+        ("Black", "Male"),
     ]
     for job_category in modified_df["Category"].unique():
         for race, gender in combinations:
@@ -99,7 +97,7 @@ def preprocess_and_save():
 
             if race == "White" and gender == "Female":
                 fn_bank, ln_bank = white_female_fn, white_ln
-            elif race == "African_American" and gender == "Female":
+            elif race == "Black" and gender == "Female":
                 fn_bank, ln_bank = african_american_female_fn, african_american_ln
             elif race == "White" and gender == "Male":
                 fn_bank, ln_bank = white_male_fn, white_ln

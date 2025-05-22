@@ -43,6 +43,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     anthropic_dataset: bool = False
     downsample: int | None = None
     no_names: bool = False
+    college_name_only: bool = False
     batch_size_multiplier: int = 2
     max_length: int = 2500
     overwrite_existing_results: bool = False
@@ -51,27 +52,6 @@ class EvalConfig(BaseModel, extra="forbid"):
     # For ablation experiments only
     scale: float = 1000.0
     bias_type: str = "N/A"
-
-    # model_names = [
-    #             "google/gemma-2-2b-it",
-    #             # "google/gemma-2-27b-it",
-    #             # "google/gemma-2-9b-it",
-    #             # "mistralai/Ministral-8B-Instruct-2410",
-    #             # "mistralai/Mistral-Small-24B-Instruct-2501",
-    #             # "deepseek/deepseek-r1",
-    #             # "openai/gpt-4o-2024-08-06",
-    #             # "deepseek/deepseek-r1-distill-llama-70b"
-    #             # "openai/o1-mini-2024-09-12",
-    #             # "openai/o1-mini",
-    #             # "openai/o1"
-    #             # "x-ai/grok-3-mini-beta"
-    #             # "qwen/qwq-32b",
-    #             # "anthropic/claude-3.7-sonnet"
-    #             # "anthropic/claude-3.7-sonnet:thinking",
-    #             # "qwen/qwen2.5-32b-instruct",
-    #             # "openai/gpt-4o-mini",
-    #         ]
-
     model_names_to_iterate: list[str] = field(default_factory=list)
     anti_bias_statement_files_to_iterate: list[str] = field(default_factory=list)
     job_description_files_to_iterate: list[str] = field(default_factory=list)

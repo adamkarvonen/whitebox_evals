@@ -87,7 +87,10 @@ async def main(
     eval_config: EvalConfig,
     timestamp: str,
 ) -> dict[str, Any]:
-    """python mypkg/main_paper_dataset.py --config configs/base_experiment.yaml"""
+    """
+    python mypkg/main_paper_dataset.py --config configs/base_experiment.yaml
+    python mypkg/main_paper_dataset.py --config configs/openrouter_experiment.yaml
+    """
 
     start_time = time.time()
 

@@ -58,25 +58,6 @@ def balanced_downsample(
     return balanced_sample
 
 
-def filter_by_demographics(
-    df: pd.DataFrame,
-    gender: str | None = None,
-    race: str | None = None,
-    politics: str | None = None,
-) -> pd.DataFrame:
-    """
-    Further filters the DataFrame by demographic attributes.
-    If any of these parameters are None, that attribute is ignored.
-    """
-    if gender is not None:
-        df = df[df["Gender"] == gender]
-    if race is not None:
-        df = df[df["Race"] == race]
-    if politics is not None:
-        df = df[df["Political_orientation"] == politics]
-    return df.reset_index(drop=True)
-
-
 def load_full_anthropic_dataset(
     downsample_questions: int | None = None,
 ) -> pd.DataFrame:

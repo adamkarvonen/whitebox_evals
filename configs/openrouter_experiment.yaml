@@ -2,7 +2,7 @@ resume_dataset_path: "data/resume/selected_cats_resumes.csv"
 
 # inference_mode: gpu_forward_pass     # REQUIRED (e.g. gpu_forward_pass, gpu_inference, perform_ablations, …)
 # inference_mode: perform_ablations
-inference_mode: projection_ablations
+inference_mode: open_router
 
 random_seed: 42
 
@@ -20,14 +20,14 @@ industry: "INFORMATION-TECHNOLOGY"
 anthropic_dataset: false
 downsample: 50
 no_names: false
-college_name_only: false
+college_name_only: true
 
 # Ablation-only parameters
 scale: 1000.0
 bias_type: "N/A"
 
 model_names_to_iterate:
-  - "google/gemma-2-2b-it"
+  - "mistralai/Mistral-Small-24B-Instruct-2501"
 
 anti_bias_statement_files_to_iterate:
   - "v2.txt"
@@ -39,8 +39,7 @@ scales_to_iterate:
   - 1000.0
 
 bias_types_to_iterate:
-  - "race"
-  - "gender"
+  - "N/A"
 
 
     # model_names = [

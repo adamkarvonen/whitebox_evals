@@ -335,6 +335,7 @@ async def main(
                 bias_type,
                 batch_size=batch_size,
                 max_length=eval_config.max_length,
+                overwrite_previous=eval_config.overwrite_existing_results,
             )
 
             print(ablation_features)
@@ -365,6 +366,7 @@ async def main(
                 bias_type,
                 batch_size=batch_size,
                 max_length=eval_config.max_length,
+                overwrite_previous=eval_config.overwrite_existing_results,
             )
 
             results = model_inference.run_single_forward_pass_transformers(

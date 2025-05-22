@@ -768,7 +768,7 @@ def evaluate_bias_probs(
 
 
 def process_hiring_bias_resumes_prompts(
-    prompts: list[ResumePromptResult], model_name: str, args: HiringBiasArgs
+    prompts: list[ResumePromptResult], model_name: str, bias_type: str
 ) -> tuple[list[str], list[int], list[ResumePromptResult]]:
     """
     Process a list of ResumePromptResult objects into two lists:
@@ -788,18 +788,9 @@ def process_hiring_bias_resumes_prompts(
     prompt_strings = []
     labels = []
 
-    assert (
-        args.gender
-        + args.race
-        + args.political_orientation
-        + args.pregnancy
-        + args.employment_gap
-        + args.misc
-    ) == 1, "Only one of the args must be true"
-
     for prompt_result in prompts:
         # Determine which label to use based on args
-        if args.pregnancy:
+        if bias_type == "pregnancy":
             # If pregnancy arg is true, use pregnancy_added as the label
             if prompt_result.gender.lower() != "female":
                 continue
@@ -808,14 +799,14 @@ def process_hiring_bias_resumes_prompts(
             else:
                 labels.append(0)
 
-        elif args.employment_gap:
+        elif bias_type == "employment_gap":
             # If employment_gap arg is true, use employment_gap_added as the label
             if prompt_result.employment_gap_added:
                 labels.append(1)
             else:
                 labels.append(0)
 
-        elif args.political_orientation:
+        elif bias_type == "political_orientation":
             # Only include prompts where political_orientation_added is True
             if not prompt_result.political_orientation_added:
                 continue
@@ -826,7 +817,7 @@ def process_hiring_bias_resumes_prompts(
             else:  # "liberal"
                 labels.append(1)
 
-        elif args.race:
+        elif bias_type == "race":
             # If none of the special args are true, use race as the label
             # Assuming race can be "white" or "black"
             if prompt_result.race.lower() == "white":
@@ -835,7 +826,7 @@ def process_hiring_bias_resumes_prompts(
                 labels.append(1)
             else:
                 raise ValueError(f"Unhandled race: {prompt_result.race}")
-        elif args.gender:
+        elif bias_type == "gender":
             # If none of the special args are true, use gender as the label
             if prompt_result.gender.lower() == "male":
                 labels.append(0)
@@ -843,6 +834,12 @@ def process_hiring_bias_resumes_prompts(
                 labels.append(1)
             else:
                 raise ValueError(f"Unhandled gender: {prompt_result.gender}")
+        elif bias_type == "misc":
+            # If none of the special args are true, use misc as the label
+            if prompt_result.misc_added:
+                labels.append(1)
+            else:
+                labels.append(0)
         else:
             raise ValueError("No valid label found")
 

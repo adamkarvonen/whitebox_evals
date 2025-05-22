@@ -523,6 +523,7 @@ def get_ablation_features(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
+    overwrite_previous: bool = False,
 ) -> torch.Tensor:
     assert padding_side in ["left", "right"]
     assert bias_type in ["gender", "race", "political_orientation"]
@@ -546,7 +547,7 @@ def get_ablation_features(
         "/", "_"
     )
     filename = os.path.join(ablation_features_dir, filename)
-    if os.path.exists(filename):
+    if os.path.exists(filename) and not overwrite_previous:
         diff_acts_F, pos_acts_F, neg_acts_F = torch.load(filename)
     else:
         print("Computing ablation features")
@@ -563,36 +564,13 @@ def get_ablation_features(
 
         eval_config = EvalConfig(
             model_name=model_name,
-            political_orientation=bias_type == "political_orientation",
-            pregnancy=False,
-            employment_gap=False,
             anthropic_dataset=False,
             downsample=downsample,
             inference_mode="gpu_forward_pass",
             anti_bias_statement_file="v2.txt",
             job_description_file="base_description.txt",
             system_prompt_filename="yes_no.txt",
-        )
-
-        args = hiring_bias_prompts.HiringBiasArgs(
-            political_orientation=bias_type == "political_orientation",
-            employment_gap=bias_type == "employment_gap",
-            pregnancy=bias_type == "pregnancy",
-            race=bias_type == "race",
-            gender=bias_type == "gender",
-            misc=bias_type == "misc",
-        )
-
-        df = dataset_setup.load_raw_dataset()
-        if eval_config.downsample:
-            df = dataset_setup.balanced_downsample(
-                df,
-                eval_config.downsample,
-                eval_config.random_seed,
-            )
-
-        prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-            df, args, eval_config
+            bias_type=bias_type,
         )
 
         if dataset_name == "resumes":
@@ -604,17 +582,15 @@ def get_ablation_features(
                     eval_config.random_seed,
                 )
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-                df, args, eval_config
+                df, eval_config
             )
         elif dataset_name == "anthropic":
             df = dataset_setup.load_full_anthropic_dataset()
-            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
-                df, args, eval_config
-            )
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
 
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
-                prompts, model_name, args
+                prompts, model_name, bias_type
             )
         )
 
@@ -1041,8 +1017,8 @@ def get_probes(
             dim=X.size(1),
             batch_size=4096,
             epochs=500,
-            lr=1e-3,
-            weight_decay=0.03,
+            lr=3e-4,
+            weight_decay=0.05,
             early_stopping_patience=50,
             verbose=False,
         )
@@ -1063,6 +1039,7 @@ def get_ablation_vectors(
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
+    overwrite_previous: bool = False,
 ) -> dict[int, list[torch.Tensor]]:
     assert padding_side in ["left", "right"]
     assert bias_type in ["gender", "race", "political_orientation"]
@@ -1084,7 +1061,7 @@ def get_ablation_vectors(
         "/", "_"
     )
     filename = os.path.join(ablation_features_dir, filename)
-    if os.path.exists(filename) and False:
+    if os.path.exists(filename) and not overwrite_previous:
         all_acts_D = torch.load(filename)
     else:
         print("Computing ablation features")
@@ -1101,24 +1078,13 @@ def get_ablation_vectors(
 
         eval_config = EvalConfig(
             model_name=model_name,
-            political_orientation=bias_type == "political_orientation",
-            pregnancy=False,
-            employment_gap=False,
             anthropic_dataset=False,
             downsample=downsample,
             inference_mode="gpu_forward_pass",
             anti_bias_statement_file="v2.txt",
             job_description_file="base_description.txt",
             system_prompt_filename="yes_no.txt",
-        )
-
-        args = hiring_bias_prompts.HiringBiasArgs(
-            political_orientation=bias_type == "political_orientation",
-            employment_gap=bias_type == "employment_gap",
-            pregnancy=bias_type == "pregnancy",
-            race=bias_type == "race",
-            gender=bias_type == "gender",
-            misc=bias_type == "misc",
+            bias_type=bias_type,
         )
 
         if dataset_name == "resumes":
@@ -1130,17 +1096,15 @@ def get_ablation_vectors(
                     eval_config.random_seed,
                 )
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-                df, args, eval_config
+                df, eval_config
             )
         elif dataset_name == "anthropic":
-            df = dataset_setup.load_full_anthropic_dataset(downsample_questions=None)
-            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
-                df, args, eval_config
-            )
+            df = dataset_setup.load_full_anthropic_dataset()
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
 
         train_texts, train_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
-                prompts, model_name, args
+                prompts, model_name, bias_type
             )
         )
 

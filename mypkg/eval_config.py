@@ -46,7 +46,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     college_name_only: bool = False
     batch_size_multiplier: int = 2
     max_length: int = 2500
-    overwrite_existing_results: bool = False
+    overwrite_existing_results: bool = True
     sae_intervention_type: str = "clamping"
 
     # For ablation experiments only

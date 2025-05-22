@@ -172,15 +172,16 @@ async def main(
         print(f"Running with scale: {scale}")
         print(f"Running with bias type: {bias_type}")
 
-        with open(f"prompts/job_descriptions/{job_description}", "r") as f:
-            job_description_text = f.read()
+        if eval_config.inference_mode != InferenceMode.OPEN_ROUTER.value:
+            with open(f"prompts/job_descriptions/{job_description}", "r") as f:
+                job_description_text = f.read()
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        job_description_length = len(tokenizer.encode(job_description_text))
-        print(f"Job description length: {job_description_length}")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            job_description_length = len(tokenizer.encode(job_description_text))
+            print(f"Job description length: {job_description_length}")
 
-        total_max_length = frozen_eval_config.max_length + job_description_length
-        print(f"Total max length: {total_max_length}")
+            total_max_length = frozen_eval_config.max_length + job_description_length
+            print(f"Total max length: {total_max_length}")
 
         results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
             ".txt", ""

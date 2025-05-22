@@ -87,21 +87,7 @@ async def main(
     eval_config: EvalConfig,
     timestamp: str,
 ) -> dict[str, Any]:
-    """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --inference_mode gpu_inference
-
-    python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass --political_orientation
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode perform_ablations
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens --political_orientation
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode logit_lens_with_intervention
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt
-
-    python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
-
-    python mypkg/main_paper_dataset.py --inference_mode gpu_forward_pass --overwrite_existing_results --anthropic_dataset"""
+    """python mypkg/main_paper_dataset.py --config configs/base_experiment.yaml"""
 
     start_time = time.time()
 

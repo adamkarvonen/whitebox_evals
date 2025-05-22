@@ -35,6 +35,8 @@ class EvalConfig(BaseModel, extra="forbid"):
     job_description_folder: str = "job_descriptions"
 
     email_domain: str = "gmail"
+    # Note: this is currently not used and is hardcoded in dataset.py
+    resume_dataset_path: str = "data/resume/selected_cats_resumes.csv"
     score_output_dir: str = "score_output"
 
     industry: str = "INFORMATION-TECHNOLOGY"

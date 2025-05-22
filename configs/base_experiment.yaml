@@ -1,13 +1,15 @@
 resume_dataset_path: "data/resume/selected_cats_resumes.csv"
 
-inference_mode: gpu_forward_pass     # REQUIRED (e.g. gpu_forward_pass, gpu_inference, perform_ablations, …)
+# inference_mode: gpu_forward_pass     # REQUIRED (e.g. gpu_forward_pass, gpu_inference, perform_ablations, …)
+# inference_mode: perform_ablations
+inference_mode: projection_ablations
 
 random_seed: 42
 
-model_name: "mistralai/Ministral-8B-Instruct-2410"
+model_name: ""
 
-anti_bias_statement_file: "anti_bias_statements.txt"
-job_description_file: "job_description.txt"
+anti_bias_statement_file: ""
+job_description_file: ""
 system_prompt_filename: "yes_no.txt"
 anti_bias_statement_folder: "generated_anti_bias_statements"
 job_description_folder: "job_descriptions"
@@ -15,18 +17,26 @@ job_description_folder: "job_descriptions"
 email_domain: "gmail"
 
 industry: "INFORMATION-TECHNOLOGY"
-mode: "full"
-political_orientation: false
-pregnancy: false
-employment_gap: false
 anthropic_dataset: false
-downsample: null                 # integer or null
-steering_intervention: false
-ablation_intervention: false
-intervention_strength: 0.0
-intervened_features: []          # list of feature names
+downsample: 50
 no_names: false
 
 # Ablation-only parameters
-scale: 0.0
+scale: 1000.0
 bias_type: "N/A"
+
+model_names_to_iterate:
+  - "google/gemma-2-2b-it"
+
+anti_bias_statement_files_to_iterate:
+  - "v2.txt"
+
+job_description_files_to_iterate:
+  - "meta_job_description.txt"
+
+scales_to_iterate:
+  - 1000.0
+
+bias_types_to_iterate:
+  - "race"
+  - "gender"

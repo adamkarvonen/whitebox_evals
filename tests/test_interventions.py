@@ -82,10 +82,9 @@ def test_interventions():
         scales_to_iterate=[2.0],
     )
 
-    cache_dir = "testing_cache"
     timestamp = "20250418_120000"
 
-    results = asyncio.run(main_paper_dataset.main(eval_config, cache_dir, timestamp))
+    results = asyncio.run(main_paper_dataset.main(eval_config, timestamp))
     first_key = list(results.keys())[0]
     results = results[first_key]
 

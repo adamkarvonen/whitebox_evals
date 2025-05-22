@@ -49,32 +49,24 @@ REASONING_MODELS = [
 
 
 def save_evaluation_results(
-    model_name: str,
-    df,
     results,
     bias_scores,
     bias_probs,
-    everything_output_filepath: str,
-    # cache_dir: str,
+    output_filepath: str,
     timestamp: str,
     eval_config: EvalConfig,
-):
+) -> dict[str, Any]:
     # Build a big dictionary with all data:
     # 1) Metadata
     evaluation_data = {
         "metadata": {
             "timestamp": timestamp,
-            "model_name": model_name,
         },
         # 2) Full list of results
         "results": [],
         # 3) Bias summary
         "bias_scores": bias_scores,
         "bias_probs": bias_probs,
-        # 4) Additional info
-        "summary_info": {
-            "total_resumes_processed": len(results),
-        },
         "eval_config": eval_config.model_dump(),
     }
 
@@ -83,15 +75,16 @@ def save_evaluation_results(
     for item in results:
         evaluation_data["results"].append(asdict(item))
 
-    with open(everything_output_filepath, "wb") as f:
+    with open(output_filepath, "wb") as f:
         pickle.dump(evaluation_data, f)
 
-    print(f"\nSaved evaluation data to: {everything_output_filepath}")
+    print(f"\nSaved evaluation data to: {output_filepath}")
+
+    return evaluation_data
 
 
 async def main(
     eval_config: EvalConfig,
-    cache_dir: str,
     timestamp: str,
 ) -> dict[str, Any]:
     """python mypkg/main_paper_dataset.py --downsample 20 --system_prompt_filename yes_no_cot.txt --inference_mode gpu_inference
@@ -109,7 +102,6 @@ async def main(
     python mypkg/main_paper_dataset.py --downsample 50 --system_prompt_filename yes_no.txt --inference_mode gpu_forward_pass
 
     python mypkg/main_paper_dataset.py --inference_mode gpu_forward_pass --overwrite_existing_results --anthropic_dataset"""
-    os.makedirs(cache_dir, exist_ok=True)
 
     start_time = time.time()
 
@@ -162,8 +154,6 @@ async def main(
 
         vllm_model = vllm.LLM(model=eval_config.model_name, dtype="bfloat16")
 
-    add_activations = True
-
     all_results = {}
 
     for (
@@ -201,29 +191,25 @@ async def main(
         total_max_length = eval_config.max_length + job_description_length
         print(f"Total max length: {total_max_length}")
 
-        temp_results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
+        results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
             ".txt", ""
         ).replace("/", "_")
 
-        temp_results_folder = os.path.join(
-            eval_config.inference_mode, model_name.replace("/", "_")
+        output_dir = os.path.join(
+            eval_config.score_output_dir,
+            eval_config.inference_mode,
+            model_name.replace("/", "_"),
         )
-        output_dir = os.path.join(eval_config.score_output_dir, temp_results_folder)
         os.makedirs(output_dir, exist_ok=True)
-        everything_output_dir = os.path.join("all_results", temp_results_folder)
-        os.makedirs(everything_output_dir, exist_ok=True)
-        everything_output_filepath = os.path.join(
-            everything_output_dir, temp_results_filename
-        )
+        results_output_filepath = os.path.join(output_dir, results_filename)
 
-        file_key = os.path.join(temp_results_folder, temp_results_filename)
-        temp_results_filepath = os.path.join(output_dir, temp_results_filename)
+        file_key = results_output_filepath
 
         if (
-            os.path.exists(temp_results_filepath)
+            os.path.exists(results_output_filepath)
             and not eval_config.overwrite_existing_results
         ):
-            print(f"Skipping {temp_results_filename} because it already exists")
+            print(f"Skipping {results_filename} because it already exists")
             continue
 
         if eval_config.anthropic_dataset:
@@ -248,21 +234,13 @@ async def main(
                 model_name,
                 batch_size=batch_size,
                 max_length=total_max_length,
-                collect_activations=add_activations,
+                collect_activations=False,
             )
         elif eval_config.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]
                 * eval_config.batch_size_multiplier
             )
-
-            # ablation_features = intervention_hooks.lookup_sae_features(
-            #     model_name,
-            #     model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
-            #     25,
-            #     anti_bias_statement_file,
-            #     bias_type,
-            # )
 
             ablation_features = model_inference.get_ablation_features(
                 model_name,
@@ -374,62 +352,37 @@ async def main(
                 prompts, api_model_name, max_completion_tokens=max_completion_tokens
             )
         else:
-            # This case should not be reachable due to argparse choices
             raise ValueError(f"Unhandled inference mode: {eval_config.inference_mode}")
 
-        run_results = {
-            "model_name": eval_config.model_name,
-            "anti_bias_statement": eval_config.anti_bias_statement_file,
-            "job_description": job_description,
-            "eval_config": eval_config.model_dump(),
-        }
+        # Quick and dirty check to see if prompts are the same from run to run
+        total_len = 0
+        for result in results:
+            total_len += len(result.prompt)
+        print(f"Total length of prompts: {total_len}")
 
-        if eval_config.inference_mode not in [
-            InferenceMode.LOGIT_LENS.value,
-            InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value,
+        bias_scores = hiring_bias_prompts.evaluate_bias(
+            results, system_prompt_filename=eval_config.system_prompt_filename
+        )
+        print(bias_scores)
+
+        if eval_config.inference_mode in [
+            InferenceMode.GPU_FORWARD_PASS.value,
+            InferenceMode.PERFORM_ABLATIONS.value,
+            InferenceMode.PROJECTION_ABLATIONS.value,
         ]:
-            # Quick and dirty check to see if prompts are the same from run to run
-            total_len = 0
-            for result in results:
-                total_len += len(result.prompt)
-            print(f"Total length of prompts: {total_len}")
+            bias_probs = hiring_bias_prompts.evaluate_bias_probs(results)
+            print("\n\n\n", bias_probs)
+        else:
+            bias_probs = None
 
-            bias_scores = hiring_bias_prompts.evaluate_bias(
-                results, system_prompt_filename=eval_config.system_prompt_filename
-            )
-            print(bias_scores)
-
-            run_results["bias_scores"] = bias_scores
-
-            if eval_config.inference_mode in [
-                InferenceMode.GPU_FORWARD_PASS.value,
-                InferenceMode.PERFORM_ABLATIONS.value,
-                InferenceMode.PROJECTION_ABLATIONS.value,
-            ]:
-                bias_probs = hiring_bias_prompts.evaluate_bias_probs(results)
-                print("\n\n\n", bias_probs)
-                run_results["bias_probs"] = bias_probs
-            else:
-                bias_probs = None
-
-            save_evaluation_results(
-                model_name,
-                df,
-                results,
-                bias_scores,
-                bias_probs,
-                everything_output_filepath,
-                timestamp,
-                eval_config,
-            )
-        elif eval_config.inference_mode in [
-            InferenceMode.LOGIT_LENS.value,
-            InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value,
-        ]:
-            run_results["logit_lens"] = results
-
-        with open(temp_results_filepath, "wb") as f:
-            pickle.dump(run_results, f)
+        run_results = save_evaluation_results(
+            results,
+            bias_scores,
+            bias_probs,
+            results_output_filepath,
+            timestamp,
+            eval_config,
+        )
 
         print(f"\nTotal resumes processed: {len(results)}")
 
@@ -459,8 +412,6 @@ def parse_overrides(pairs: list[str]) -> dict:
 if __name__ == "__main__":
     # Setup moved here
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-    os.makedirs(cache_dir, exist_ok=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -488,5 +439,4 @@ if __name__ == "__main__":
         cfg = cfg.model_copy(update=overrides)
 
     print(cfg.model_dump())
-    # Pass args, cache_dir, and timestamp to main
-    results = asyncio.run(main(cfg, cache_dir, timestamp))
+    results = asyncio.run(main(cfg, timestamp))

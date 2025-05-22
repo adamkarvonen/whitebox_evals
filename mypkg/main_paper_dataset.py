@@ -24,7 +24,7 @@ from typing import Optional, Any
 from enum import Enum
 import pickle
 
-from mypkg.eval_config import EvalConfig
+from mypkg.eval_config import EvalConfig, InferenceMode
 import mypkg.pipeline.setup.dataset as dataset_setup
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.pipeline.infra.model_inference as model_inference
@@ -33,40 +33,19 @@ import mypkg.whitebox_infra.intervention_hooks as intervention_hooks
 import mypkg.whitebox_infra.logit_lens as logit_lens
 
 
-# Define the InferenceMode Enum
-class InferenceMode(Enum):
-    GPU_INFERENCE = "gpu_inference"
-    GPU_FORWARD_PASS = "gpu_forward_pass"
-    PERFORM_ABLATIONS = "perform_ablations"
-    PROJECTION_ABLATIONS = "projection_ablations"
-    OPEN_ROUTER = "open_router"
-    LOGIT_LENS = "logit_lens"
-    LOGIT_LENS_WITH_INTERVENTION = "logit_lens_with_intervention"
-
-    def __str__(self):
-        return self.value
-
-
 OPENROUTER_NAME_LOOKUP = {
     "mistralai/Ministral-8B-Instruct-2410": "mistralai/ministral-8b",
     "mistralai/Mistral-Small-24B-Instruct-2501": "mistralai/mistral-small-3.1-24b-instruct",
 }
 
-
-# Moved Logger class to top level
-class Logger:
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, "w", encoding="utf-8")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
+REASONING_MODELS = [
+    "openai/o1-mini",
+    "x-ai/grok-3-mini-beta",
+    "qwen/qwq-32b",
+    "openai/o1",
+    "anthropic/claude-3.7-sonnet:thinking",
+    "deepseek/deepseek-r1",
+]
 
 
 def save_evaluation_results(
@@ -108,51 +87,6 @@ def save_evaluation_results(
         pickle.dump(evaluation_data, f)
 
     print(f"\nSaved evaluation data to: {everything_output_filepath}")
-
-
-def balanced_downsample(df, n_samples, random_seed=42):
-    """
-    Downsample the dataset while maintaining balance across resume content.
-
-    Args:
-        df: DataFrame containing the dataset
-        n_samples: Number of unique resume contents to sample
-        random_seed: Random seed for reproducibility
-
-    Returns:
-        Downsampled DataFrame that maintains demographic variations for each resume
-    """
-    # Get unique resume strings
-    unique_resumes = df["Resume_str"].unique()
-
-    if n_samples > len(unique_resumes):
-        print(
-            f"Warning: Requested sample size ({n_samples}) is larger than unique resumes ({len(unique_resumes)}). Using all unique resumes."
-        )
-        return df
-
-    # Randomly sample n_samples unique resumes
-    sampled_resumes = random.sample(list(unique_resumes), n_samples)
-
-    # Get all rows that contain these resume strings
-    balanced_sample = df[df["Resume_str"].isin(sampled_resumes)]
-
-    print(f"Downsampled to {len(sampled_resumes)} unique resumes")
-    print(
-        f"Total samples after maintaining demographic variations: {len(balanced_sample)}"
-    )
-
-    return balanced_sample
-
-
-REASONING_MODELS = [
-    "openai/o1-mini",
-    "x-ai/grok-3-mini-beta",
-    "qwen/qwq-32b",
-    "openai/o1",
-    "anthropic/claude-3.7-sonnet:thinking",
-    "deepseek/deepseek-r1",
-]
 
 
 async def main(
@@ -198,7 +132,7 @@ async def main(
             print("No industry filter applied.")
 
         if eval_config.downsample is not None:
-            df = balanced_downsample(
+            df = dataset_setup.balanced_downsample(
                 df, eval_config.downsample, eval_config.random_seed
             )
 
@@ -527,40 +461,32 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cache_dir = os.path.join(os.path.dirname(__file__), "cache")
     os.makedirs(cache_dir, exist_ok=True)
-    log_file = os.path.join(cache_dir, f"history_output_{timestamp}.txt")
-    original_stdout = sys.stdout  # Keep track of the original stdout
-    sys.stdout = Logger(log_file)
 
-    try:
-        parser = argparse.ArgumentParser()
-        parser.add_argument(
-            "--config",
-            required=True,
-            default="configs/base_experiment.yaml",
-            help="YAML file with experiment cfg",
-        )
-        parser.add_argument(
-            "--override",
-            nargs="*",
-            default=[],
-            help="Ad-hoc overrides key=val (YAML typed)",
-        )
-        args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        required=True,
+        default="configs/base_experiment.yaml",
+        help="YAML file with experiment cfg",
+    )
+    parser.add_argument(
+        "--override",
+        nargs="*",
+        default=[],
+        help="Ad-hoc overrides key=val (YAML typed)",
+    )
+    args = parser.parse_args()
 
-        cfg = EvalConfig.from_yaml(args.config)
+    cfg = EvalConfig.from_yaml(args.config)
 
-        if args.override:
-            import yaml  # local import to avoid mandatory dependency for non-users
+    if args.override:
+        import yaml  # local import to avoid mandatory dependency for non-users
 
-            overrides = {
-                k: yaml.safe_load(v) for k, v in parse_overrides(args.override).items()
-            }
-            cfg = cfg.model_copy(update=overrides)
+        overrides = {
+            k: yaml.safe_load(v) for k, v in parse_overrides(args.override).items()
+        }
+        cfg = cfg.model_copy(update=overrides)
 
-        print(cfg.model_dump())
-        # Pass args, cache_dir, and timestamp to main
-        results = asyncio.run(main(cfg, cache_dir, timestamp))
-    finally:
-        # Ensure stdout is reset and logger is closed even if errors occur
-        sys.stdout.log.close()
-        sys.stdout = original_stdout  # Restore original stdout
+    print(cfg.model_dump())
+    # Pass args, cache_dir, and timestamp to main
+    results = asyncio.run(main(cfg, cache_dir, timestamp))

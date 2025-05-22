@@ -5,7 +5,7 @@ from datasets import load_dataset
 from mypkg.pipeline.setup.config import load_config
 
 
-def load_raw_dataset():
+def load_raw_dataset() -> pd.DataFrame:
     """
     Loads the preprocessed CSV.
     Returns a Pandas DataFrame with all resumes and metadata.
@@ -15,7 +15,7 @@ def load_raw_dataset():
     return df
 
 
-def filter_by_industry(df, industry):
+def filter_by_industry(df: pd.DataFrame, industry: str) -> pd.DataFrame:
     """
     Filters the DataFrame to include only rows for the specified industry:
     'INFORMATION-TECHNOLOGY', 'CONSTRUCTION', or 'TEACHER'.
@@ -23,7 +23,9 @@ def filter_by_industry(df, industry):
     return df[df["Category"] == industry].reset_index(drop=True)
 
 
-def balanced_downsample(df, n_samples, random_seed=42):
+def balanced_downsample(
+    df: pd.DataFrame, n_samples: int, random_seed: int = 42
+) -> pd.DataFrame:
     """
     Downsample the dataset while maintaining balance across resume content.
 
@@ -58,7 +60,12 @@ def balanced_downsample(df, n_samples, random_seed=42):
     return balanced_sample
 
 
-def filter_by_demographics(df, gender=None, race=None, politics=None):
+def filter_by_demographics(
+    df: pd.DataFrame,
+    gender: str | None = None,
+    race: str | None = None,
+    politics: str | None = None,
+) -> pd.DataFrame:
     """
     Further filters the DataFrame by demographic attributes.
     If any of these parameters are None, that attribute is ignored.
@@ -72,7 +79,9 @@ def filter_by_demographics(df, gender=None, race=None, politics=None):
     return df.reset_index(drop=True)
 
 
-def load_full_anthropic_dataset(downsample_questions: int | None = None):
+def load_full_anthropic_dataset(
+    downsample_questions: int | None = None,
+) -> pd.DataFrame:
     if downsample_questions is None:
         downsample_questions = 150
     explicit_dataset = load_dataset("Anthropic/discrim-eval", "explicit")
@@ -107,22 +116,4 @@ def load_full_anthropic_dataset(downsample_questions: int | None = None):
 
     print(f"DF length after filtering: {len(df)}")
 
-    return df
-
-
-def summarize_resume(full_text, max_chars=1024):
-    """
-    Summarize the resume if needed.
-    """
-    raise ValueError("Summarizing resumes is not supported yet")
-    return (full_text[:max_chars] + "...") if len(full_text) > max_chars else full_text
-
-
-def prepare_dataset_for_model(df, mode="full"):
-    """
-    Preprocesses the DataFrame depending on whether you want a 'full' resume
-    or a 'summary' version for smaller models.
-    """
-    if mode == "summary":
-        df["Resume"] = df["Resume"].apply(lambda text: summarize_resume(str(text)))
     return df

@@ -17,6 +17,9 @@ class InferenceMode(str, Enum):
     LOGIT_LENS = "logit_lens"
     LOGIT_LENS_WITH_INTERVENTION = "logit_lens_with_intervention"
 
+    def __str__(self):
+        return self.value
+
 
 class EvalConfig(BaseModel, extra="forbid"):
     inference_mode: InferenceMode
@@ -35,7 +38,6 @@ class EvalConfig(BaseModel, extra="forbid"):
     score_output_dir: str = "score_output"
 
     industry: str = "INFORMATION-TECHNOLOGY"
-    mode: str = "full"
     anthropic_dataset: bool = False
     downsample: int | None = None
     no_names: bool = False

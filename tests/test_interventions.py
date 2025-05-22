@@ -68,7 +68,6 @@ def test_interventions():
         job_description_folder="job_descriptions",
         email_domain="gmail",
         industry="INFORMATION-TECHNOLOGY",
-        mode="full",
         anthropic_dataset=False,
         downsample=5,
         no_names=False,

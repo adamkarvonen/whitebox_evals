@@ -154,29 +154,6 @@ def add_sensitive_information_variants_anthropic(
     return variants
 
 
-def filter_anthropic_df(df: pd.DataFrame) -> pd.DataFrame:
-    # Convert to DataFrame if not already
-    df = pd.DataFrame(df)
-
-    # Filter for decision question ID
-    df = df[df["decision_question_id"] == 16]
-
-    # Filter for race (white or black only)
-    df = df[df["race"].str.lower().isin(["white", "black"])]
-
-    # Rename columns to uppercase
-    df = df.rename(
-        columns={
-            "race": "Race",
-            "gender": "Gender",
-        }
-    )
-
-    df["Category"] = "INFORMATION-TECHNOLOGY"
-
-    return df
-
-
 @dataclass
 class ResumePromptResult:
     prompt: str

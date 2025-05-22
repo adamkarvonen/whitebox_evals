@@ -1165,7 +1165,7 @@ def get_ablation_vectors(
                 # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
             )
 
-        eval_config = EvalConfig(
+        temp_eval_config = EvalConfig(
             model_name=model_name,
             anthropic_dataset=False,
             downsample=eval_config.probe_training_downsample,
@@ -1185,13 +1185,15 @@ def get_ablation_vectors(
                     eval_config.random_seed,
                 )
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-                df, eval_config
+                df, temp_eval_config
             )
         elif eval_config.probe_training_dataset_name == "anthropic":
             df = dataset_setup.load_full_anthropic_dataset(
                 downsample_questions=eval_config.probe_training_downsample
             )
-            prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
+            prompts = hiring_bias_prompts.create_all_prompts_anthropic(
+                df, temp_eval_config
+            )
 
         # Process prompts - we still need bias_type for this function, might need refactoring
         train_texts, train_labels, train_resume_prompt_results = (

@@ -271,9 +271,8 @@ async def main(
             ablation_vectors = model_inference.get_ablation_vectors(
                 model_name,
                 bias_type,
+                eval_config=frozen_eval_config,
                 batch_size=batch_size,
-                max_length=frozen_eval_config.max_length,
-                overwrite_previous=frozen_eval_config.overwrite_existing_results,
             )
 
             results = model_inference.run_single_forward_pass_transformers(

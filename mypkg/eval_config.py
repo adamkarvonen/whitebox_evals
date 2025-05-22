@@ -58,6 +58,19 @@ class EvalConfig(BaseModel, extra="forbid"):
     bias_types_to_iterate: list[str] = field(default_factory=list)
     scales_to_iterate: list[float] = field(default_factory=list)
 
+    probe_training_lr: float = 3e-4
+    probe_training_weight_decay: float = 0.05
+    probe_training_early_stopping_patience: int = 50
+    probe_training_max_iter: int = 500
+    probe_training_batch_size: int = 4096
+    probe_training_begin_layer_percent: int = 25
+    probe_training_downsample: int | None = None
+    probe_training_dataset_name: str = "anthropic"
+    probe_training_overwrite_previous: bool = True
+    probe_training_anti_bias_statement_file: str = "v2.txt"
+    probe_training_job_description_file: str = "base_description.txt"
+    probe_vectors_dir: str = "ablation_vectors"
+
     # ------------- convenience IO helpers -------------
 
     @classmethod

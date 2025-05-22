@@ -942,6 +942,28 @@ def get_pos_neg_activations(
             batch
         )
 
+        race_labels = []
+        gender_labels = []
+        political_orientation_labels = []
+        for resume_prompt_result in resume_prompt_results_batch:
+            resume_prompt_result: hiring_bias_prompts.ResumePromptResult
+            assert resume_prompt_result.race.lower() in ["white", "black"]
+            assert resume_prompt_result.gender.lower() in ["male", "female"]
+            race_labels.append(resume_prompt_result.race.lower() == "black")
+            gender_labels.append(resume_prompt_result.gender.lower() == "female")
+            if resume_prompt_result.political_orientation_added:
+                print(
+                    resume_prompt_result.politics,
+                    resume_prompt_result.political_orientation_added,
+                )
+                assert resume_prompt_result.politics.lower() in [
+                    "democrat",
+                    "republican",
+                ]
+                political_orientation_labels.append(
+                    resume_prompt_result.politics.lower() == "democrat"
+                )
+
         model_inputs = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -973,8 +995,11 @@ def get_probes(
     model: AutoModelForCausalLM,
     dataloader: DataLoader,
     chosen_layers: list[int],
-    C: float = 1.0,
-    max_iter: int = 2000,
+    lr: float,
+    weight_decay: float,
+    early_stopping_patience: int,
+    max_iter: int,
+    probe_batch_size: int,
 ) -> dict[int, dict[str, torch.Tensor]]:
     pos_acts_BD, neg_acts_BD = get_pos_neg_activations(model, dataloader, chosen_layers)
 
@@ -1015,11 +1040,11 @@ def get_probes(
             X_test.cuda(),
             y_test.cuda(),
             dim=X.size(1),
-            batch_size=4096,
-            epochs=500,
-            lr=3e-4,
-            weight_decay=0.05,
-            early_stopping_patience=50,
+            batch_size=probe_batch_size,
+            epochs=max_iter,
+            lr=lr,
+            weight_decay=weight_decay,
+            early_stopping_patience=early_stopping_patience,
             verbose=False,
         )
         w_gpu = gpu_probe.net.weight.data.squeeze()
@@ -1035,33 +1060,25 @@ def get_probes(
 def get_ablation_vectors(
     model_name: str,
     bias_type: str,
+    eval_config: EvalConfig,
     batch_size: int = 64,
     padding_side: str = "left",
-    max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
-    overwrite_previous: bool = False,
 ) -> dict[int, list[torch.Tensor]]:
     assert padding_side in ["left", "right"]
     assert bias_type in ["gender", "race", "political_orientation"]
 
-    layer_percent = 25
-    downsample = 150
+    assert eval_config.probe_training_dataset_name in ["resumes", "anthropic"]
 
-    dataset_name = "resumes"
-    dataset_name = "anthropic"
-
-    assert dataset_name in ["resumes", "anthropic"]
-
-    if dataset_name == "anthropic":
+    if eval_config.probe_training_dataset_name == "anthropic":
         batch_size *= 8
 
-    ablation_features_dir = "ablation_vectors"
-    os.makedirs(ablation_features_dir, exist_ok=True)
-    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{dataset_name}_{downsample}.pt".replace(
+    os.makedirs(eval_config.probe_vectors_dir, exist_ok=True)
+    filename = f"ablation_features_{bias_type}_{model_name}_{eval_config.probe_training_dataset_name}_{eval_config.probe_training_downsample}.pt".replace(
         "/", "_"
     )
-    filename = os.path.join(ablation_features_dir, filename)
-    if os.path.exists(filename) and not overwrite_previous:
+    filename = os.path.join(eval_config.probe_vectors_dir, filename)
+    if os.path.exists(filename) and not eval_config.probe_training_overwrite_previous:
         all_acts_D = torch.load(filename)
     else:
         print("Computing ablation features")
@@ -1079,27 +1096,29 @@ def get_ablation_vectors(
         eval_config = EvalConfig(
             model_name=model_name,
             anthropic_dataset=False,
-            downsample=downsample,
+            downsample=eval_config.probe_training_downsample,
             inference_mode="gpu_forward_pass",
-            anti_bias_statement_file="v2.txt",
-            job_description_file="base_description.txt",
-            system_prompt_filename="yes_no.txt",
+            anti_bias_statement_file=eval_config.probe_training_anti_bias_statement_file,
+            job_description_file=eval_config.probe_training_job_description_file,
+            system_prompt_filename=eval_config.system_prompt_filename,
             bias_type=bias_type,
         )
 
-        if dataset_name == "resumes":
+        if eval_config.probe_training_dataset_name == "resumes":
             df = dataset_setup.load_raw_dataset()
-            if eval_config.downsample:
+            if eval_config.probe_training_downsample:
                 df = dataset_setup.balanced_downsample(
                     df,
-                    eval_config.downsample,
+                    eval_config.probe_training_downsample,
                     eval_config.random_seed,
                 )
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
                 df, eval_config
             )
-        elif dataset_name == "anthropic":
-            df = dataset_setup.load_full_anthropic_dataset()
+        elif eval_config.probe_training_dataset_name == "anthropic":
+            df = dataset_setup.load_full_anthropic_dataset(
+                downsample_questions=eval_config.probe_training_downsample
+            )
             prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
 
         train_texts, train_labels, train_resume_prompt_results = (
@@ -1127,16 +1146,26 @@ def get_ablation_vectors(
             model_name,
             device,
             batch_size=batch_size,
-            max_length=max_length,
+            max_length=eval_config.max_length,
         )
 
-        # chosen_layers = list(range(len(model.model.layers)))
         num_layers = len(model.model.layers)
-        chosen_layers = list(range(num_layers // 4, num_layers))
-        # chosen_layers = list(range(num_layers))
+        begin_layer = int(
+            num_layers * eval_config.probe_training_begin_layer_percent / 100
+        )
+        chosen_layers = list(range(begin_layer, num_layers))
 
         # all_acts_D = get_model_activations(model, dataloader, chosen_layers)
-        all_acts_D = get_probes(model, dataloader, chosen_layers)
+        all_acts_D = get_probes(
+            model,
+            dataloader,
+            chosen_layers,
+            lr=eval_config.probe_training_lr,
+            weight_decay=eval_config.probe_training_weight_decay,
+            early_stopping_patience=eval_config.probe_training_early_stopping_patience,
+            max_iter=eval_config.probe_training_max_iter,
+            probe_batch_size=eval_config.probe_training_batch_size,
+        )
 
         torch.save(all_acts_D, filename)
 

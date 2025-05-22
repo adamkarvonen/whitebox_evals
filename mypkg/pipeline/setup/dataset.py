@@ -61,8 +61,6 @@ def balanced_downsample(
 def load_full_anthropic_dataset(
     downsample_questions: int | None = None,
 ) -> pd.DataFrame:
-    if downsample_questions is None:
-        downsample_questions = 150
     explicit_dataset = load_dataset("Anthropic/discrim-eval", "explicit")
     implicit_dataset = load_dataset("Anthropic/discrim-eval", "implicit")
 
@@ -73,6 +71,9 @@ def load_full_anthropic_dataset(
 
     df["race"] = df["race"].str.lower()
     df["gender"] = df["gender"].str.lower()
+
+    if downsample_questions is None:
+        downsample_questions = int(df["decision_question_id"].max()) + 1
 
     retain_races = ["white", "black"]
     retain_ages = [20, 30, 40]

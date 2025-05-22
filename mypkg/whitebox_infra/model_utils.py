@@ -220,50 +220,18 @@ def load_model_sae(
         raise ValueError(f"Model {model_name} not supported")
 
 
-def add_mistral_v3_chat_template(prompts: list[str]) -> list[str]:
-    return [f"<s>[INST]{prompt}[/INST]" for prompt in prompts]
-
-
-def add_gemma_chat_template(prompts: list[str]) -> list[str]:
-    return [
-        f"<bos><start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
-        for prompt in prompts
-    ]
-
-
-def add_qwen_chat_template(prompts: list[str]) -> list[str]:
-    return [
-        f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-        for prompt in prompts
-    ]
-
-
 def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
-    if (
-        model_name == "mistralai/Ministral-8B-Instruct-2410"
-        or model_name == "mistralai/Mistral-Small-24B-Instruct-2501"
-    ):
-        return add_mistral_v3_chat_template(prompts)
-    elif (
-        model_name == "google/gemma-2-9b-it"
-        or model_name == "google/gemma-2-27b-it"
-        or model_name == "google/gemma-2-2b-it"
-    ):
-        return add_gemma_chat_template(prompts)
-    elif model_name == "Qwen/Qwen2.5-3B-Instruct":
-        return add_qwen_chat_template(prompts)
-    else:
-        raise ValueError(f"Please implement a chat template for {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # We don't use this because we want the model's first token to be it's response, not a formatting token
-    # formatted_prompts = []
-    # for prompt in prompts:
-    #     formatted_prompt = tokenizer.apply_chat_template(
-    #         [{"role": "user", "content": prompt}],
-    #         tokenize=False,
-    #     )
-    #     formatted_prompts.append(formatted_prompt)
-    # return formatted_prompts
+    formatted_prompts = []
+    for prompt in prompts:
+        formatted_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        formatted_prompts.append(formatted_prompt)
+    return formatted_prompts
 
 
 def collect_token_ids(tokenizer: AutoTokenizer, candidates: list[str]) -> list[int]:

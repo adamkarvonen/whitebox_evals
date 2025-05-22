@@ -2,8 +2,6 @@ import pandas as pd
 import random
 from datasets import load_dataset
 
-from mypkg.pipeline.setup.config import load_config
-
 
 def load_raw_dataset() -> pd.DataFrame:
     """

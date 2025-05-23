@@ -1146,7 +1146,7 @@ def get_ablation_vectors(
     batch_size: int = 64,
     padding_side: str = "left",
     model: Optional[AutoModelForCausalLM] = None,
-) -> dict[int, dict[str, list[torch.Tensor]]]:
+) -> dict[int, list[torch.Tensor]]:
     assert padding_side in ["left", "right"]
     # Remove the bias_type assertion since we're training all types
 

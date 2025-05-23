@@ -27,9 +27,30 @@ if __name__ == "__main__":
 
     tasks = ["mmlu"]
 
+
+    output_folder = "mmlu_ablation_results"
+    os.makedirs(output_folder, exist_ok=True)
+
     for model_name in cfg.model_names_to_iterate:
+        filename = f"{output_folder}/{model_name.replace('/', '_')}.pkl"
+        if os.path.exists(filename):
+            print(f"Skipping {model_name} because it already exists")
+            continue
+
         start_time = time.time()
         print(f"Evaluating {model_name}...")
+
+        batch_size = (
+            model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+            * cfg.batch_size_multiplier
+        )
+
+        ablation_vectors = model_inference.get_ablation_vectors(
+            model_name,
+            bias_type="all",
+            eval_config=cfg,
+            batch_size=batch_size,
+        )
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -46,18 +67,6 @@ if __name__ == "__main__":
             tasks=tasks,
             num_fewshot=0,
             task_manager=task_manager,
-        )
-
-        batch_size = (
-            model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-            * cfg.batch_size_multiplier
-        )
-
-        ablation_vectors = model_inference.get_ablation_vectors(
-            model_name,
-            bias_type="all",
-            eval_config=cfg,
-            batch_size=batch_size,
         )
 
         handles = []
@@ -86,8 +95,6 @@ if __name__ == "__main__":
             for handle in handles:
                 handle.remove()
 
-        output_folder = "mmlu_ablation_results"
-        os.makedirs(output_folder, exist_ok=True)
 
         filename = f"{output_folder}/{model_name.replace('/', '_')}.pkl"
         results = {

@@ -167,28 +167,41 @@ def get_projection_ablation_hook(
     so the output tensor is (approximately) orthogonal to every r_k.
     """
 
-    # Stack directions → (K, D)
     dirs_KD: Float[Tensor, "K d_model"] = torch.stack(ablate_vectors).to(
-        dtype=torch.bfloat16
+        dtype=torch.float32
     )
 
+    # Normalize first (optional but good practice)
     dirs_KD = torch.nn.functional.normalize(dirs_KD, dim=1)
+
+    # Orthogonalize the directions using QR decomposition
+    # Transpose to (D, K) for QR, then transpose back
+    dirs_DK = dirs_KD.T
+    Q, R = torch.linalg.qr(dirs_DK, mode="reduced")
+    # Q is (D, K) with orthonormal columns
+    dirs_KD_ortho = Q.T  # Back to (K, D)
+
+    # Note: If K > D or vectors are linearly dependent, some columns of Q might be zero
+    # We should filter those out
+    norms = torch.norm(dirs_KD_ortho, dim=1)
+    valid_mask = norms > 1e-6
+    dirs_KD_ortho = dirs_KD_ortho[valid_mask]
 
     def hook_fn(module, _input, output):
         resid_BLD: Float[Tensor, "batch seq_len d_model"] = output[0]
 
         # Dot product with all directions → proj_BLK
         proj_BLK: Float[Tensor, "batch seq_len K"] = torch.einsum(
-            "bld,kd->blk", resid_BLD, dirs_KD
+            "bld,kd->blk", resid_BLD.to(dtype=torch.float32), dirs_KD_ortho
         )
 
         # Expand back to d_model and subtract
         delta_BLKD: Float[Tensor, "batch seq_len K d_model"] = (
-            proj_BLK.unsqueeze(-1) * dirs_KD
+            proj_BLK.unsqueeze(-1) * dirs_KD_ortho
         )
         delta_BLD: Float[Tensor, "batch seq_len d_model"] = delta_BLKD.sum(dim=2)
 
-        resid_BLD = resid_BLD - delta_BLD
+        resid_BLD = resid_BLD - delta_BLD.to(dtype=resid_BLD.dtype)
 
         return (resid_BLD,) + output[1:]
 

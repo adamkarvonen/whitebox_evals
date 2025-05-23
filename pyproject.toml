@@ -31,7 +31,8 @@ dependencies = [
     "wheel>=0.45.1",
     "xformers",
     "vllm",
-    "beartype"
+    "beartype",
+    "lm_eval==0.4.8"
 ]
 
 [project.optional-dependencies]

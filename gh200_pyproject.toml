@@ -29,7 +29,8 @@ dependencies = [
     "wheel>=0.45.1",
     "numpy<2.0",
     "torch>=2.4.1",
-    "beartype"
+    "beartype",
+    "lm_eval==0.4.8"
 ]
 
 # NOTE: TO INSTALL:

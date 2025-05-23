@@ -274,6 +274,8 @@ def run_single_forward_pass_transformers(
     ablation_type: str = "clamping",
     scale: Optional[float] = None,
     collect_activations: bool = False,
+    save_logits_folder: Optional[str] = None,
+    orthogonalize_model: bool = False,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     assert padding_side in ["left", "right"]
 
@@ -303,6 +305,7 @@ def run_single_forward_pass_transformers(
     )
 
     ablation_features_dict = None
+    handles = None
 
     if ablation_features is not None:
         trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
@@ -333,7 +336,11 @@ def run_single_forward_pass_transformers(
         for layer, acts_F in ablation_vectors.items():
             ablation_features_dict[layer] = (acts_F, None, None, None)
 
-    for batch in tqdm(dataloader, desc="Processing prompts"):
+    if orthogonalize_model:
+        assert ablation_vectors is not None, "Cannot orthogonalize model without ablation features"
+        model = intervention_hooks.orthogonalize_model_weights(model, ablation_vectors)
+
+    for batch_idx, batch in tqdm(enumerate(dataloader), desc="Processing prompts"):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
             batch
         )
@@ -342,7 +349,7 @@ def run_single_forward_pass_transformers(
             "attention_mask": attention_mask,
         }
 
-        if ablation_features_dict is not None:
+        if ablation_features_dict is not None and not orthogonalize_model:
             handles = []
 
             for layer_idx, (
@@ -385,6 +392,12 @@ def run_single_forward_pass_transformers(
             else:
                 logits_BLV = model(**model_inputs).logits
 
+                if save_logits_folder is not None:
+                    save_logits_folder = save_logits_folder.replace("/", "_")
+                    os.makedirs(save_logits_folder, exist_ok=True)
+                    torch.save(logits_BLV, os.path.join(save_logits_folder, f"logits_{batch_idx}.pt"))
+                    print(f"Saved logits of shape {logits_BLV.shape} for batch {batch_idx}")
+
             if padding_side == "right":
                 seq_lengths_B = model_inputs["attention_mask"].sum(dim=1) - 1
                 answer_logits_BV = logits_BLV[
@@ -409,12 +422,11 @@ def run_single_forward_pass_transformers(
                 prompt_dicts[idx].yes_probs = yes_probs_B[i].item()
                 prompt_dicts[idx].no_probs = no_probs_B[i].item()
         finally:
-            if ablation_features_dict is not None:
+            if handles is not None:
                 for handle in handles:
                     handle.remove()
 
     return prompt_dicts
-
 
 @torch.no_grad()
 def compute_sae_activations(
@@ -1110,10 +1122,11 @@ def get_probes(
                 # This is for determinism on the end to end test
                 torch.manual_seed(42)
             idx = torch.randperm(N)
-            split = int(0.8 * N)
-            train_idx, test_idx = idx[:split], idx[split:]
-            X_train, y_train = X[train_idx], y[train_idx]
-            X_test, y_test = X[test_idx], y[test_idx]
+            # split = int(0.8 * N)
+            # train_idx, test_idx = idx[:split], idx[split:]
+            # X_train, y_train = X[train_idx], y[train_idx]
+            # X_test, y_test = X[test_idx], y[test_idx]
+            X_train, y_train, X_test, y_test = X, y, X, y
 
             # 4. train probe ------------------------------------------------------
             gpu_probe, gpu_acc = probe_training.train_probe_gpu(
@@ -1152,7 +1165,7 @@ def get_ablation_vectors(
 
     assert eval_config.probe_training_dataset_name in ["resumes", "anthropic"]
 
-    if eval_config.probe_training_dataset_name == "anthropic":
+    if eval_config.probe_training_dataset_name == "anthropic" and not eval_config.anthropic_dataset:
         batch_size *= 8
 
     os.makedirs(eval_config.probe_vectors_dir, exist_ok=True)

@@ -90,6 +90,8 @@ async def main(
     """
     python mypkg/main_paper_dataset.py --config configs/base_experiment.yaml
     python mypkg/main_paper_dataset.py --config configs/openrouter_experiment.yaml
+
+    python mypkg/main_paper_dataset.py --config configs/base_experiment.yaml ; python mypkg/main_paper_dataset.py --config configs/base_experiment_intervention.yaml ; python mypkg/mmlu_eval.py ; python mypkg/main_paper_dataset.py --config configs/base_experiment_anthropic_eval.yaml
     """
 
     start_time = time.time()
@@ -100,7 +102,7 @@ async def main(
 
     print("Loading dataset...")
     if eval_config.anthropic_dataset:
-        df = dataset_setup.load_full_anthropic_dataset()
+        df = dataset_setup.load_full_anthropic_dataset(downsample_questions=eval_config.downsample)
         eval_config.system_prompt_filename = "yes_no_anthropic.txt"
         eval_config.batch_size_multiplier = 8
     else:
@@ -282,6 +284,7 @@ async def main(
                 ablation_vectors=ablation_vectors,
                 ablation_type="projection_ablations",
                 max_length=total_max_length,
+                orthogonalize_model=frozen_eval_config.orthogonalize_model,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
             results = model_inference.run_inference_vllm(

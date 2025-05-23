@@ -3,7 +3,7 @@ import einops
 from jaxtyping import Float
 from torch import Tensor
 from typing import Callable, Optional
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 import mypkg.whitebox_infra.dictionaries.base_sae as base_sae
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
@@ -146,6 +146,95 @@ def get_conditional_clamping_hook(
 
     return hook_fn
 
+def orthogonalize_vectors(dirs_KD: Float[Tensor, "K d_model"]) -> Float[Tensor, "K d_model"]:
+    dirs_KD = torch.nn.functional.normalize(dirs_KD, dim=1)
+
+    # Orthogonalize the directions using QR decomposition
+    # Transpose to (D, K) for QR, then transpose back
+    dirs_DK = dirs_KD.T
+    Q, R = torch.linalg.qr(dirs_DK, mode="reduced")
+    # Q is (D, K) with orthonormal columns
+    dirs_KD_ortho = Q.T  # Back to (K, D)
+
+    # Note: If K > D or vectors are linearly dependent, some columns of Q might be zero
+    # We should filter those out
+    norms = torch.norm(dirs_KD_ortho, dim=1)
+    valid_mask = norms > 1e-6
+    dirs_KD_ortho = dirs_KD_ortho[valid_mask]
+
+    return dirs_KD_ortho
+
+def orthogonalize_matrix_to_directions(
+    W: Float[Tensor, "d_out d_in"], 
+    dirs_KD: Float[Tensor, "k d_out"]
+) -> Float[Tensor, "d_out d_in"]:
+    """
+    Orthogonalize a weight matrix W so it doesn't write to specified directions.
+    
+    W_new = W - sum_k (r_k @ r_k.T @ W)
+    
+    where r_k are normalized direction vectors.
+    """
+    W_ortho = W.clone().to(dtype=torch.float32)
+    
+    assert W_ortho.shape[0] == dirs_KD.shape[1], "Number of rows in W must match number of directions"
+
+    dirs_KD_ortho = orthogonalize_vectors(dirs_KD)
+    
+    # Project out each orthogonalized direction
+    for direction in dirs_KD_ortho:
+        direction = direction / (direction.norm() + 1e-8)  # Normalize
+        # W_new = W - r @ r.T @ W
+        projection = torch.outer(direction, direction) @ W_ortho
+        W_ortho = W_ortho - projection
+
+    return W_ortho.to(dtype=torch.bfloat16)
+
+
+def orthogonalize_model_weights(
+    model: AutoModelForCausalLM,
+    layer_directions: dict[int, list[Float[Tensor, "d_model"]]]
+):
+    """
+    Orthogonalize all residual stream writes in the model.
+    
+    Args:
+        model: The transformer model
+        layer_directions: Dict mapping layer index to list of directions
+    """
+    print(f"Orthogonalizing model weights for {len(layer_directions)} layers")
+
+    for layer_idx, layer_dir in layer_directions.items():
+        layer_directions[layer_idx] = orthogonalize_vectors(torch.stack(layer_dir).to(dtype=torch.float32))
+    
+    # 1. Orthogonalize embedding matrix (affects all layers)
+    if 0 in layer_directions:
+        model.model.embed_tokens.weight.data = orthogonalize_matrix_to_directions(
+            model.model.embed_tokens.weight.data.T,  # Transpose to (d_model, vocab_size)
+            layer_directions[0]
+        ).T  # Transpose back
+    
+    # 2. Orthogonalize each layer's output projections
+    for layer_idx, layer in enumerate(model.model.layers):
+        if layer_idx not in layer_directions:
+            continue
+            
+        directions = layer_directions[layer_idx]
+        
+        # Attention output projection
+        layer.self_attn.o_proj.weight.data = orthogonalize_matrix_to_directions(
+            layer.self_attn.o_proj.weight.data,
+            directions
+        )
+        
+        # MLP output projection  
+        layer.mlp.down_proj.weight.data = orthogonalize_matrix_to_directions(
+            layer.mlp.down_proj.weight.data,
+            directions
+        )
+    
+    return model
+
 
 def get_projection_ablation_hook(
     ablate_vectors: list[Float[Tensor, "d_model"]],
@@ -171,21 +260,7 @@ def get_projection_ablation_hook(
         dtype=torch.float32
     )
 
-    # Normalize first (optional but good practice)
-    dirs_KD = torch.nn.functional.normalize(dirs_KD, dim=1)
-
-    # Orthogonalize the directions using QR decomposition
-    # Transpose to (D, K) for QR, then transpose back
-    dirs_DK = dirs_KD.T
-    Q, R = torch.linalg.qr(dirs_DK, mode="reduced")
-    # Q is (D, K) with orthonormal columns
-    dirs_KD_ortho = Q.T  # Back to (K, D)
-
-    # Note: If K > D or vectors are linearly dependent, some columns of Q might be zero
-    # We should filter those out
-    norms = torch.norm(dirs_KD_ortho, dim=1)
-    valid_mask = norms > 1e-6
-    dirs_KD_ortho = dirs_KD_ortho[valid_mask]
+    dirs_KD_ortho = orthogonalize_vectors(dirs_KD)
 
     def hook_fn(module, _input, output):
         resid_BLD: Float[Tensor, "batch seq_len d_model"] = output[0]

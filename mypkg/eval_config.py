@@ -72,6 +72,8 @@ class EvalConfig(BaseModel, extra="forbid"):
     probe_vectors_dir: str = "ablation_vectors"
     test_mode: bool = False
 
+    orthogonalize_model: bool = False
+
     # ------------- convenience IO helpers -------------
 
     @classmethod

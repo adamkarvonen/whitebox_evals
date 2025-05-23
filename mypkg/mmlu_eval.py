@@ -17,13 +17,15 @@ if __name__ == "__main__":
     cfg = EvalConfig.from_yaml(config_file)
     dtype = torch.bfloat16
 
-    tasks = [
-        "mmlu_high_school_statistics",
-        "mmlu_high_school_computer_science",
-        "mmlu_high_school_mathematics",
-        "mmlu_high_school_physics",
-        "mmlu_high_school_biology",
-    ]
+    # tasks = [
+    #     "mmlu_high_school_statistics",
+    #     "mmlu_high_school_computer_science",
+    #     "mmlu_high_school_mathematics",
+    #     "mmlu_high_school_physics",
+    #     "mmlu_high_school_biology",
+    # ]
+
+    tasks = ["mmlu"]
 
     for model_name in cfg.model_names_to_iterate:
         start_time = time.time()

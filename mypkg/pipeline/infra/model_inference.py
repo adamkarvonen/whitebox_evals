@@ -954,6 +954,24 @@ def get_pos_neg_activations(
 
     has_political_orientation = False
 
+    first_batch = next(iter(dataloader))
+    (
+        input_ids,
+        attention_mask,
+        unused_labels,
+        idx_batch,
+        resume_prompt_results_batch,
+    ) = first_batch
+
+    for resume_prompt_result in resume_prompt_results_batch:
+        if resume_prompt_result.political_orientation_added:
+            has_political_orientation = True
+            break
+    bias_types = ["race", "gender"]
+    if has_political_orientation:
+        bias_types.append("political_orientation")
+        raise ValueError("Please review this code")
+
     for batch in tqdm(dataloader):
         (
             input_ids,
@@ -979,11 +997,7 @@ def get_pos_neg_activations(
             )
 
             if resume_prompt_result.political_orientation_added:
-                has_political_orientation = True
-                print(
-                    resume_prompt_result.politics,
-                    resume_prompt_result.political_orientation_added,
-                )
+                assert has_political_orientation, "Political orientation not added"
                 assert resume_prompt_result.politics.lower() in [
                     "democrat",
                     "republican",
@@ -1000,11 +1014,6 @@ def get_pos_neg_activations(
             if political_orientation_labels
             else None
         )
-
-        bias_types = ["race", "gender"]
-        if political_orientation_labels is not None:
-            bias_types.append("political_orientation")
-            raise ValueError("Political orientation not implemented for now")
 
         model_inputs = {
             "input_ids": input_ids,
@@ -1079,24 +1088,26 @@ def get_probes(
                     f"Bias type {bias_type} not found in negative activations"
                 )
 
-            X = torch.cat(
-                [pos_acts_BD[layer][bias_type], neg_acts_BD[layer][bias_type]], 0
+            pos_acts = pos_acts_BD[layer][bias_type]
+            neg_acts = neg_acts_BD[layer][bias_type]
+
+            assert len(pos_acts) == len(neg_acts), (
+                "Pos and neg acts must have the same number of examples"
             )
+
+            X = torch.cat([pos_acts, neg_acts], dim=0)
             y = torch.cat(
                 [
-                    torch.ones(
-                        pos_acts_BD[layer][bias_type].shape[0], dtype=torch.long
-                    ),
-                    torch.zeros(
-                        neg_acts_BD[layer][bias_type].shape[0], dtype=torch.long
-                    ),
+                    torch.ones(len(pos_acts), dtype=torch.long),
+                    torch.zeros(len(neg_acts), dtype=torch.long),
                 ],
-                0,
+                dim=0,
             )
 
             # 3. 80/20 split (torch only) --------------------------------------------
             N = X.size(0)
             if testing:
+                # This is for determinism on the end to end test
                 torch.manual_seed(42)
             idx = torch.randperm(N)
             split = int(0.8 * N)
@@ -1195,8 +1206,7 @@ def get_ablation_vectors(
                 df, temp_eval_config
             )
 
-        # Process prompts - we still need bias_type for this function, might need refactoring
-        train_texts, train_labels, train_resume_prompt_results = (
+        train_texts, unused_labels, train_resume_prompt_results = (
             hiring_bias_prompts.process_hiring_bias_resumes_prompts(
                 prompts,
                 model_name,
@@ -1206,7 +1216,7 @@ def get_ablation_vectors(
 
         dataloader = data_utils.create_simple_dataloader(
             train_texts,
-            train_labels,
+            [0] * len(train_texts),
             train_resume_prompt_results,
             model_name,
             device,
@@ -1240,7 +1250,6 @@ def get_ablation_vectors(
     for layer in all_acts_D:
         intervention_vectors[layer] = []
         # for bias_type in all_acts_D[layer]:
-        print(f"orig bias type : {bias_type}")
         intervention_vectors[layer].append(all_acts_D[layer][bias_type]["diff_acts_D"])
 
     return intervention_vectors

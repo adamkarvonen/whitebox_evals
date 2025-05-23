@@ -1225,15 +1225,13 @@ def get_ablation_vectors(
         )
 
         num_layers = len(model.model.layers)
-        begin_layer = int(
-            num_layers * eval_config.probe_training_begin_layer_percent / 100
-        )
-        chosen_layers = list(range(begin_layer, num_layers))
+        all_layers = list(range(num_layers))
 
+        # We always train probes on all layers
         all_acts_D = get_probes(
             model,
             dataloader,
-            chosen_layers,
+            all_layers,
             lr=eval_config.probe_training_lr,
             weight_decay=eval_config.probe_training_weight_decay,
             early_stopping_patience=eval_config.probe_training_early_stopping_patience,
@@ -1244,12 +1242,28 @@ def get_ablation_vectors(
 
         torch.save(all_acts_D, filename)
 
+    # Filter to only the layers we want to use for ablation
+    num_layers = max(list(all_acts_D.keys())) + 1
+    begin_layer = int(num_layers * eval_config.probe_training_begin_layer_percent / 100)
+    chosen_layers = list(range(begin_layer, num_layers))
+    all_acts_D = {
+        layer: all_acts_D[layer] for layer in all_acts_D if layer in chosen_layers
+    }
+
     # Convert to the expected format: {layer: {bias_type: [vector]}}
     intervention_vectors = {}
 
+    if bias_type == "all":
+        first_layer = list(all_acts_D.keys())[0]
+        bias_types = list(all_acts_D[first_layer].keys())
+    else:
+        bias_types = [bias_type]
+
     for layer in all_acts_D:
         intervention_vectors[layer] = []
-        # for bias_type in all_acts_D[layer]:
-        intervention_vectors[layer].append(all_acts_D[layer][bias_type]["diff_acts_D"])
+        for bias_type in bias_types:
+            intervention_vectors[layer].append(
+                all_acts_D[layer][bias_type]["diff_acts_D"]
+            )
 
     return intervention_vectors

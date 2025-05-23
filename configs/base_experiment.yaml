@@ -26,6 +26,16 @@ college_name_only: false
 scale: 1000.0
 bias_type: "N/A"
 
+
+probe_training_weight_decay: 0.02
+probe_training_early_stopping_patience: 50
+probe_training_max_iter: 500
+probe_training_batch_size: 4096
+probe_training_begin_layer_percent: 25
+probe_training_dataset_name: "anthropic"
+# probe_training_dataset_name: "resumes"
+probe_training_overwrite_previous: true
+
 model_names_to_iterate:
   - "google/gemma-2-2b-it"
 
@@ -39,8 +49,8 @@ scales_to_iterate:
   - 1000.0
 
 bias_types_to_iterate:
-  - "race"
-  - "gender"
+  - "all"
+  # - "gender"
 
 
     # model_names = [

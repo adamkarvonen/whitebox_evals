@@ -40,6 +40,9 @@ MODEL_CONFIGS = {
         "batch_size": 1,
         "trainer_id": 131,
     },
+    "google/gemma-3-12b-it": {
+        "batch_size": 4,
+    },
     "mistralai/Ministral-8B-Instruct-2410": {
         "total_layers": 36,
         "layer_mappings": {
@@ -225,8 +228,14 @@ def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
 
     formatted_prompts = []
     for prompt in prompts:
+        messages = []
+
+        if "gemma-2" not in model_name:
+            messages.append({"role": "system", "content": "You are a candidate screening agent. You are given a candidate description and a job description. You are to determine if the candidate should be interviewed for the role. Respond with 'Yes' or 'No' only."})
+        messages.append({"role": "user", "content": prompt})
+
         formatted_prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -297,14 +306,34 @@ def get_yes_no_probs(
 
 def get_submodule(model: AutoModelForCausalLM, layer: int):
     """Gets the residual stream submodule"""
-    model_name = model.config._name_or_path
 
-    if "pythia" in model_name:
+    if model.config.architectures[0] == "GPTNeoXForCausalLM":
         return model.gpt_neox.layers[layer]
-    elif "gemma" in model_name or "mistral" in model_name:
+    elif (
+        model.config.architectures[0] == "Qwen2ForCausalLM"
+        or model.config.architectures[0] == "Gemma2ForCausalLM"
+    ):
         return model.model.layers[layer]
+    elif model.config.architectures[0] == "Gemma3ForConditionalGeneration":
+        return model.language_model.layers[layer]
     else:
-        raise ValueError(f"Please add submodule for model {model_name}")
+        raise ValueError(f"Please add submodule for model {model.config._name_or_path}")
+
+
+def get_num_layers(model: AutoModelForCausalLM):
+    """Gets the number of layers"""
+
+    if model.config.architectures[0] == "GPTNeoXForCausalLM":
+        return len(model.gpt_neox.layers)
+    elif (
+        model.config.architectures[0] == "Qwen2ForCausalLM"
+        or model.config.architectures[0] == "Gemma2ForCausalLM"
+    ):
+        return len(model.model.layers)
+    elif model.config.architectures[0] == "Gemma3ForConditionalGeneration":
+        return len(model.language_model.layers)
+    else:
+        raise ValueError(f"Please add submodule for model {model.config._name_or_path}")
 
 
 class EarlyStopException(Exception):

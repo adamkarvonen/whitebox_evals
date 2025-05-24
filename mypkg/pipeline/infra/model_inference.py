@@ -1239,7 +1239,7 @@ def get_ablation_vectors(
             max_length=eval_config.max_length,
         )
 
-        num_layers = len(model.model.layers)
+        num_layers = model_utils.get_num_layers(model)
         all_layers = list(range(num_layers))
 
         # We always train probes on all layers

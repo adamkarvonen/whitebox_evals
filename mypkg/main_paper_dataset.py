@@ -230,37 +230,6 @@ async def main(
                 max_length=total_max_length,
                 collect_activations=False,
             )
-        elif frozen_eval_config.inference_mode == InferenceMode.PERFORM_ABLATIONS.value:
-            batch_size = (
-                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * frozen_eval_config.batch_size_multiplier
-            )
-
-            ablation_features = model_inference.get_ablation_features(
-                model_name,
-                bias_type,
-                batch_size=batch_size,
-                max_length=frozen_eval_config.max_length,
-                overwrite_previous=frozen_eval_config.overwrite_existing_results,
-            )
-
-            print(ablation_features)
-
-            if len(ablation_features) == 0:
-                print(
-                    f"No ablation features found for {model_name} with bias type {bias_type} and anti-bias statement {anti_bias_statement_file}"
-                )
-                continue
-
-            results = model_inference.run_single_forward_pass_transformers(
-                prompts,
-                model_name,
-                batch_size=batch_size,
-                ablation_features=ablation_features,
-                ablation_type=frozen_eval_config.sae_intervention_type,
-                scale=scale,
-                max_length=total_max_length,
-            )
         elif (
             frozen_eval_config.inference_mode
             == InferenceMode.PROJECTION_ABLATIONS.value
@@ -304,42 +273,6 @@ async def main(
                 add_final_layer=False,
                 batch_size=batch_size,
                 max_length=total_max_length,
-                use_tuned_lenses=True,
-            )
-        elif (
-            frozen_eval_config.inference_mode
-            == InferenceMode.LOGIT_LENS_WITH_INTERVENTION.value
-        ):
-            batch_size = (
-                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
-                * frozen_eval_config.batch_size_multiplier
-            )
-
-            ablation_features = intervention_hooks.lookup_sae_features(
-                model_name,
-                model_utils.MODEL_CONFIGS[model_name]["trainer_id"],
-                25,
-                anti_bias_statement_file,
-                bias_type,
-            )
-
-            print(ablation_features)
-
-            if len(ablation_features) == 0:
-                print(
-                    f"No ablation features found for {model_name} with bias type {bias_type} and anti-bias statement {anti_bias_statement_file}"
-                )
-                continue
-
-            results = logit_lens.run_logit_lens_with_intervention(
-                prompts,
-                model_name,
-                add_final_layer=False,
-                batch_size=batch_size,
-                max_length=total_max_length,
-                ablation_features=ablation_features,
-                ablation_type=frozen_eval_config.sae_intervention_type,
-                scale=scale,
                 use_tuned_lenses=True,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.OPEN_ROUTER.value:

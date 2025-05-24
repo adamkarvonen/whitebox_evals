@@ -9,47 +9,6 @@ import mypkg.whitebox_infra.dictionaries.base_sae as base_sae
 import mypkg.pipeline.infra.hiring_bias_prompts as hiring_bias_prompts
 import mypkg.whitebox_infra.attribution as attribution
 
-
-def lookup_sae_features(
-    model_name: str,
-    trainer_id: int,
-    layer_percent: int,
-    anti_bias_statement_file: str,
-    bias_type: str,
-) -> torch.Tensor:
-    assert bias_type in ["race", "gender", "political_orientation"]
-
-    anti_bias_statement_file_idx = int(
-        anti_bias_statement_file.replace("v", "").replace(".txt", "")
-    )
-
-    model_name = model_name.replace("/", "_")
-
-    filename = f"v{anti_bias_statement_file_idx}_trainer_{trainer_id}_model_{model_name}_layer_{layer_percent}_attrib_data.pt"
-    attrib_path = f"data/attribution_results_data/{model_name}/{filename}"
-
-    data = torch.load(attrib_path)
-
-    attribution_data = attribution.AttributionData.from_dict(data[bias_type])
-
-    effects_F = attribution_data.pos_effects_F - attribution_data.neg_effects_F
-
-    k = 20
-
-    top_k_ids = effects_F.abs().topk(k).indices
-
-    act_ratios_F = attribution_data.pos_sae_acts_F / attribution_data.neg_sae_acts_F
-
-    top_k_act_ratios = act_ratios_F[top_k_ids]
-
-    adjusted_act_ratios = attribution.adjust_tensor_values(top_k_act_ratios)
-    outlier_effect_ids = adjusted_act_ratios > 2.0
-
-    top_k_ids = top_k_ids[outlier_effect_ids]
-
-    return top_k_ids
-
-
 def get_sae_vectors(
     ablation_features: torch.Tensor, sae: base_sae.BaseSAE
 ) -> tuple[list[Float[Tensor, "d_model"]], list[Float[Tensor, "d_model"]], list[float]]:
@@ -164,6 +123,8 @@ def orthogonalize_vectors(dirs_KD: Float[Tensor, "K d_model"]) -> Float[Tensor, 
 
     return dirs_KD_ortho
 
+
+
 def orthogonalize_matrix_to_directions(
     W: Float[Tensor, "d_out d_in"], 
     dirs_KD: Float[Tensor, "k d_out"]
@@ -259,9 +220,33 @@ def orthogonalize_model_weights(
     
     return model
 
+def assert_orthonormal_vectors(dirs_KD: Float[Tensor, "K d_model"], rtol: float = 1e-3, atol: float = 1e-3) -> None:
+    """
+    Assert that vectors are unit norm and mutually orthogonal within tolerance.
+    
+    Args:
+        dirs_KD: Tensor of shape (K, d_model) containing K vectors
+        rtol: Relative tolerance for comparisons
+        atol: Absolute tolerance for comparisons
+    """
+    K, D = dirs_KD.shape
+    
+    # Check unit norm for each vector
+    norms = torch.norm(dirs_KD, dim=1)
+    assert torch.allclose(norms, torch.ones(K, device=dirs_KD.device), rtol=rtol, atol=atol), \
+        f"Vectors not unit norm. Norms: {norms.tolist()}"
+    
+    # Check orthogonality by computing pairwise dot products
+    # Should get identity matrix
+    gram_matrix = dirs_KD @ dirs_KD.T  # (K, K)
+    expected = torch.eye(K, device=dirs_KD.device)
+    
+    assert torch.allclose(gram_matrix, expected, rtol=rtol, atol=atol), \
+        f"Vectors not orthogonal. Max off-diagonal: {(gram_matrix - expected).abs().max().item():.6e}"
 
 def get_projection_ablation_hook(
-    ablate_vectors: list[Float[Tensor, "d_model"]],
+    ablate_vectors: Float[Tensor, "K d_model"],
+    ablate_biases: Float[Tensor, "K"],
 ) -> Callable:
     """
     Returns a hook that *ablates* (projects out) one or more directions
@@ -280,11 +265,11 @@ def get_projection_ablation_hook(
     so the output tensor is (approximately) orthogonal to every r_k.
     """
 
-    dirs_KD: Float[Tensor, "K d_model"] = torch.stack(ablate_vectors).to(
-        dtype=torch.float32
-    )
+    dirs_KD_ortho = ablate_vectors.to(dtype=torch.float32)
 
-    dirs_KD_ortho = orthogonalize_vectors(dirs_KD)
+    assert_orthonormal_vectors(dirs_KD_ortho)
+
+    biases_K = ablate_biases.to(dtype=torch.float32)
 
     def hook_fn(module, _input, output):
         resid_BLD: Float[Tensor, "batch seq_len d_model"] = output[0]
@@ -292,7 +277,7 @@ def get_projection_ablation_hook(
         # Dot product with all directions → proj_BLK
         proj_BLK: Float[Tensor, "batch seq_len K"] = torch.einsum(
             "bld,kd->blk", resid_BLD.to(dtype=torch.float32), dirs_KD_ortho
-        )
+        ) - biases_K[None, None, :]
 
         # Expand back to d_model and subtract
         delta_BLKD: Float[Tensor, "batch seq_len K d_model"] = (
@@ -300,7 +285,7 @@ def get_projection_ablation_hook(
         )
         delta_BLD: Float[Tensor, "batch seq_len d_model"] = delta_BLKD.sum(dim=2)
 
-        resid_BLD = resid_BLD - (delta_BLD.to(dtype=resid_BLD.dtype) * 1.0)
+        resid_BLD = resid_BLD - delta_BLD.to(dtype=resid_BLD.dtype)
 
         return (resid_BLD,) + output[1:]
 
@@ -350,122 +335,6 @@ def get_conditional_steering_hook(
     return hook_fn
 
 
-def get_conditional_adaptive_clamping_hook(
-    encoder_vectors: list[Float[Tensor, "d_model"]],
-    decoder_vectors: list[Float[Tensor, "d_model"]],
-    scales: list[float],
-    encoder_thresholds: list[float],
-) -> Callable:
-    """Creates a hook function that conditionally clamps activations.
-
-    Combines conditional intervention with clamping - only clamps activations
-    when they exceed the encoder threshold with the decoder intervention.
-
-    Args:
-        encoder_vectors: List of vectors defining directions to monitor
-        decoder_vectors: List of vectors defining intervention directions
-        scales: Target values for clamping
-        encoder_thresholds: Threshold values that trigger clamping
-
-    Returns:
-        Hook function that conditionally clamps and modifies activations
-
-    Note:
-        Most sophisticated intervention type, combining benefits of
-        conditional application and activation clamping
-    """
-
-    def hook_fn(module, input, output):
-        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
-
-        B, L, D = resid_BLD.shape
-
-        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
-            encoder_vectors, decoder_vectors, scales, encoder_thresholds
-        ):
-            # Get encoder activations
-            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
-
-            max_act_B = einops.reduce(feature_acts_BL, "B L -> B", "max")
-
-            # Create mask for where encoder activation exceeds threshold
-            intervention_mask_BL = feature_acts_BL > encoder_threshold
-
-            # Calculate clamping amount only where mask is True
-            decoder_BLD = (
-                -feature_acts_BL[:, :, None] + (coeff * max_act_B[:, None, None])
-            ) * decoder_vector_D[None, None, :]
-
-            # Apply clamping only where both mask is True and activation is positive
-            resid_BLD = torch.where(
-                (intervention_mask_BL[:, :, None] & (feature_acts_BL[:, :, None] > 0)),
-                resid_BLD + decoder_BLD,
-                resid_BLD,
-            )
-
-        return (resid_BLD,) + output[1:]
-
-    return hook_fn
-
-
-def get_conditional_adaptive_steering_hook(
-    encoder_vectors: list[Float[Tensor, "d_model"]],
-    decoder_vectors: list[Float[Tensor, "d_model"]],
-    scales: list[float],
-    encoder_thresholds: list[float],
-) -> Callable:
-    """Creates a hook function that conditionally clamps activations.
-
-    Combines conditional intervention with clamping - only clamps activations
-    when they exceed the encoder threshold with the decoder intervention.
-
-    Args:
-        encoder_vectors: List of vectors defining directions to monitor
-        decoder_vectors: List of vectors defining intervention directions
-        scales: Target values for clamping
-        encoder_thresholds: Threshold values that trigger clamping
-
-    Returns:
-        Hook function that conditionally clamps and modifies activations
-
-    Note:
-        Most sophisticated intervention type, combining benefits of
-        conditional application and activation clamping
-    """
-
-    def hook_fn(module, input, output):
-        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
-
-        B, L, D = resid_BLD.shape
-
-        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
-            encoder_vectors, decoder_vectors, scales, encoder_thresholds
-        ):
-            # Get encoder activations
-            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
-
-            max_act_B = einops.reduce(feature_acts_BL, "B L -> B", "max")
-
-            # Create mask for where encoder activation exceeds threshold
-            intervention_mask_BL = feature_acts_BL > encoder_threshold
-
-            # Calculate clamping amount only where mask is True
-            decoder_BLD = (
-                feature_acts_BL[:, :, None] + (coeff * max_act_B[:, None, None])
-            ) * decoder_vector_D[None, None, :]
-
-            # Apply clamping only where both mask is True and activation is positive
-            resid_BLD = torch.where(
-                (intervention_mask_BL[:, :, None] & (feature_acts_BL[:, :, None] > 0)),
-                resid_BLD + decoder_BLD,
-                resid_BLD,
-            )
-
-        return (resid_BLD,) + output[1:]
-
-    return hook_fn
-
-
 def get_constant_steering_hook(
     encoder_vectors: list[Float[Tensor, "d_model"]],
     decoder_vectors: list[Float[Tensor, "d_model"]],
@@ -496,68 +365,12 @@ def get_constant_steering_hook(
 
     return hook_fn
 
-
-def get_targeted_steering_hook(
-    encoder_vectors: list[Float[Tensor, "d_model"]],
-    decoder_vectors: list[Float[Tensor, "d_model"]],
-    scales: list[float],
-    encoder_thresholds: list[float],
-    resume_prompt_results: list[hiring_bias_prompts.ResumePromptResult],
-    input_ids: torch.Tensor,
-    tokenizer: AutoTokenizer,
-) -> Callable:
-    resume_mask_BL = torch.zeros_like(input_ids)
-
-    # Note: This is currently pretty slow, could be sped up more by precomputing the encoded suffix and resume
-    for i, resume_prompt in enumerate(resume_prompt_results):
-        resume = resume_prompt.resume
-        prompt_splits = resume_prompt.prompt.split(resume)
-        assert len(prompt_splits) == 2
-        suffix = prompt_splits[-1]
-        encoded_suffix = tokenizer.encode(suffix, add_special_tokens=False)
-        encoded_resume = tokenizer.encode(resume, add_special_tokens=False)
-        resume_end = -len(encoded_suffix)
-        resume_start = resume_end - len(encoded_resume)
-        resume_mask_BL[i, resume_start:resume_end] = 1
-
-    def hook_fn(module, input, output):
-        resid_BLD: Float[Tensor, "batch_size seq_len d_model"] = output[0]
-
-        B, L, D = resid_BLD.shape
-
-        for encoder_vector_D, decoder_vector_D, coeff, encoder_threshold in zip(
-            encoder_vectors, decoder_vectors, scales, encoder_thresholds
-        ):
-            # Get encoder activations
-            feature_acts_BL = torch.einsum("BLD,D->BL", resid_BLD, encoder_vector_D)
-
-            # Create mask for where encoder activation exceeds threshold
-            intervention_mask_BL = feature_acts_BL > encoder_threshold
-
-            # Calculate clamping amount only where mask is True
-            decoder_BLD = coeff * decoder_vector_D[None, None, :]
-
-            decoder_BLD = decoder_BLD * resume_mask_BL[:, :, None]
-
-            # Apply clamping only where both mask is True and activation is positive
-            resid_BLD = resid_BLD + decoder_BLD
-
-        return (resid_BLD,) + output[1:]
-
-    return hook_fn
-
-
 def get_ablation_hook(
     ablation_type: str,
-    encoder_vectors: list[Float[Tensor, "d_model"]],
-    decoder_vectors: list[Float[Tensor, "d_model"]],
-    scales: list[float],
-    encoder_biases: list[float],
-    resume_prompt_results_batch: Optional[
-        list[hiring_bias_prompts.ResumePromptResult]
-    ] = None,
-    input_ids: Optional[torch.Tensor] = None,
-    tokenizer: Optional[AutoTokenizer] = None,
+    encoder_vectors: Float[Tensor, "k d_model"],
+    decoder_vectors: Optional[Float[Tensor, "k d_model"]],
+    scales: Optional[Float[Tensor, "k"]],
+    encoder_biases: Optional[Float[Tensor, "k"]],
 ) -> Callable:
     pass
 
@@ -573,26 +386,8 @@ def get_ablation_hook(
         ablation_hook = get_constant_steering_hook(
             encoder_vectors, decoder_vectors, scales, encoder_biases
         )
-    elif ablation_type == "adaptive_clamping":
-        ablation_hook = get_conditional_adaptive_clamping_hook(
-            encoder_vectors, decoder_vectors, scales, encoder_biases
-        )
-    elif ablation_type == "adaptive_steering":
-        ablation_hook = get_conditional_adaptive_steering_hook(
-            encoder_vectors, decoder_vectors, scales, encoder_biases
-        )
-    elif ablation_type == "targeted":
-        ablation_hook = get_targeted_steering_hook(
-            encoder_vectors,
-            decoder_vectors,
-            scales,
-            encoder_biases,
-            resume_prompt_results_batch,
-            input_ids,
-            tokenizer,
-        )
     elif ablation_type == "projection_ablations":
-        ablation_hook = get_projection_ablation_hook(encoder_vectors)
+        ablation_hook = get_projection_ablation_hook(encoder_vectors, encoder_biases)
     else:
         raise ValueError(f"Invalid ablation type: {ablation_type}")
 

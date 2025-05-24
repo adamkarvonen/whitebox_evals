@@ -266,8 +266,7 @@ def run_single_forward_pass_transformers(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     model_name: str,
     batch_size: int = 64,
-    ablation_features: Optional[torch.Tensor] = None,
-    ablation_vectors: Optional[dict[int, list[torch.Tensor]]] = None,
+    ablation_vectors: Optional[dict[int, dict[str, list[torch.Tensor]]]] = None,
     padding_side: str = "left",
     max_length: int = 8192,
     model: Optional[AutoModelForCausalLM] = None,
@@ -307,34 +306,15 @@ def run_single_forward_pass_transformers(
     ablation_features_dict = None
     handles = None
 
-    if ablation_features is not None:
-        trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
-        sae = model_utils.load_model_sae(
-            model_name, device, dtype, 25, trainer_id=trainer_id
-        )
-        scales = [scale] * len(ablation_features)
-        encoder_vectors, decoder_vectors, encoder_biases = (
-            intervention_hooks.get_sae_vectors(ablation_features, sae)
-        )
-        sae = sae.to("cpu")
-        hook_layer = sae.hook_layer
-        del sae
-        torch.cuda.empty_cache()
-
-        ablation_features_dict = {
-            hook_layer: (encoder_vectors, decoder_vectors, scales, encoder_biases)
-        }
-
     if ablation_vectors is not None:
-        assert ablation_features is None, (
-            "Cannot use both ablation_features and ablation_vectors"
-        )
         assert ablation_type == "projection_ablations", (
             "ablation_vectors is only supported for projection ablation"
         )
         ablation_features_dict = {}
-        for layer, acts_F in ablation_vectors.items():
-            ablation_features_dict[layer] = (acts_F, None, None, None)
+        for layer, vec_dict in ablation_vectors.items():
+            acts_F = vec_dict["diff_acts_D"]
+            mu = vec_dict["mu"]
+            ablation_features_dict[layer] = (acts_F, None, None, mu)
 
     if orthogonalize_model:
         assert ablation_vectors is not None, "Cannot orthogonalize model without ablation features"
@@ -366,9 +346,6 @@ def run_single_forward_pass_transformers(
                     decoder_vectors,
                     scales,
                     encoder_biases,
-                    resume_prompt_results_batch,
-                    input_ids,
-                    tokenizer,
                 )
 
                 submodule = model_utils.get_submodule(model, layer_idx)
@@ -530,368 +507,6 @@ def get_sae_activations(
     return diff_acts_F, pos_acts_F, neg_acts_F
 
 
-def get_ablation_features(
-    model_name: str,
-    bias_type: str,
-    batch_size: int = 64,
-    padding_side: str = "left",
-    max_length: int = 8192,
-    model: Optional[AutoModelForCausalLM] = None,
-    overwrite_previous: bool = False,
-) -> torch.Tensor:
-    assert padding_side in ["left", "right"]
-    assert bias_type in ["gender", "race", "political_orientation"]
-
-    trainer_id = model_utils.MODEL_CONFIGS[model_name]["trainer_id"]
-
-    layer_percent = 25
-    downsample = 150
-
-    dataset_name = "resumes"
-    dataset_name = "anthropic"
-
-    assert dataset_name in ["resumes", "anthropic"]
-
-    if dataset_name == "anthropic":
-        batch_size *= 8
-
-    ablation_features_dir = "ablation_features"
-    os.makedirs(ablation_features_dir, exist_ok=True)
-    filename = f"ablation_features_{bias_type}_{model_name}_{layer_percent}_{dataset_name}_{trainer_id}_{downsample}.pt".replace(
-        "/", "_"
-    )
-    filename = os.path.join(ablation_features_dir, filename)
-    if os.path.exists(filename) and not overwrite_previous:
-        diff_acts_F, pos_acts_F, neg_acts_F = torch.load(filename)
-    else:
-        print("Computing ablation features")
-        dtype = torch.bfloat16
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if model is None:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                device_map="auto",
-                # attn_implementation="flash_attention_2",  # Currently having install issues with flash attention 2
-            )
-        # tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        eval_config = EvalConfig(
-            model_name=model_name,
-            anthropic_dataset=False,
-            downsample=downsample,
-            inference_mode="gpu_forward_pass",
-            anti_bias_statement_file="v2.txt",
-            job_description_file="base_description.txt",
-            system_prompt_filename="yes_no.txt",
-            bias_type=bias_type,
-        )
-
-        if dataset_name == "resumes":
-            df = dataset_setup.load_raw_dataset()
-            if eval_config.downsample:
-                df = dataset_setup.balanced_downsample(
-                    df,
-                    eval_config.downsample,
-                    eval_config.random_seed,
-                )
-            prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
-                df, eval_config
-            )
-        elif dataset_name == "anthropic":
-            df = dataset_setup.load_full_anthropic_dataset()
-            prompts = hiring_bias_prompts.create_all_prompts_anthropic(df, eval_config)
-
-        train_texts, train_labels, train_resume_prompt_results = (
-            hiring_bias_prompts.process_hiring_bias_resumes_prompts(
-                prompts, model_name, bias_type
-            )
-        )
-
-        # Assert train_labels only contains 0s and 1s
-        assert all(label in [0, 1] for label in train_labels), (
-            "train_labels contains values other than 0 and 1"
-        )
-
-        # Assert number of 0s equals number of 1s
-        num_zeros = sum(1 for label in train_labels if label == 0)
-        num_ones = sum(1 for label in train_labels if label == 1)
-        assert num_zeros == num_ones, (
-            f"train_labels is not balanced: {num_zeros} zeros vs {num_ones} ones"
-        )
-
-        dataloader = data_utils.create_simple_dataloader(
-            train_texts,
-            train_labels,
-            train_resume_prompt_results,
-            model_name,
-            device,
-            batch_size=batch_size,
-            max_length=max_length,
-        )
-
-        sae = model_utils.load_model_sae(
-            model_name, device, dtype, layer_percent, trainer_id=trainer_id
-        )
-
-        chosen_layer = model_utils.MODEL_CONFIGS[model_name]["layer_mappings"][
-            layer_percent
-        ]["layer"]
-
-        submodules = [model_utils.get_submodule(model, chosen_layer)]
-
-        diff_acts_F, pos_acts_F, neg_acts_F = get_sae_activations(
-            model, sae, dataloader, submodules, [chosen_layer]
-        )
-
-        torch.save((diff_acts_F, pos_acts_F, neg_acts_F), filename)
-
-    acts_top_k_ids = diff_acts_F.abs().topk(100).indices
-
-    # set torch print sci mode false
-    # torch.set_printoptions(sci_mode=False)
-
-    ratios = pos_acts_F[acts_top_k_ids] / (neg_acts_F[acts_top_k_ids] + 1e-10)
-
-    mask = (ratios > 2.0) | (ratios < 0.5)
-
-    selected_ids = acts_top_k_ids[mask]
-
-    return selected_ids
-
-
-@torch.no_grad()
-def compute_activations_single_layer(
-    transformers_model: AutoModelForCausalLM,
-    model_inputs: dict[str, torch.Tensor],
-    labels: torch.Tensor,
-    chosen_layers: list[int],
-    submodules: list[torch.nn.Module],
-    final_token_only: bool = True,
-    verbose: bool = False,
-    ignore_bos: bool = True,
-) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-    # assert len(chosen_layers) == 1, "Only one layer is supported for now."
-
-    layer_acts_BLD = model_utils.collect_activations(
-        transformers_model,
-        submodules[0],
-        model_inputs,
-    )
-
-    layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
-
-    if final_token_only:
-        layer_acts_BLD = layer_acts_BLD[:, -1:, :]
-
-    # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
-
-    pos_mask_B = labels == 1
-    neg_mask_B = labels == 0
-
-    pos_acts_BLD = layer_acts_BLD[pos_mask_B]
-    neg_acts_BLD = layer_acts_BLD[neg_mask_B]
-
-    pos_acts_D = einops.reduce(
-        pos_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
-    )
-    neg_acts_D = einops.reduce(
-        neg_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
-    )
-
-    if pos_mask_B.sum().item() == 0:
-        assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
-        pos_acts_D = torch.zeros_like(neg_acts_D)
-    if neg_mask_B.sum().item() == 0:
-        assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
-        neg_acts_D = torch.zeros_like(pos_acts_D)
-
-    diff_acts_D = pos_acts_D - neg_acts_D
-
-    return diff_acts_D, pos_acts_D, neg_acts_D
-
-
-def get_single_layer_model_activations(
-    model: AutoModelForCausalLM,
-    dataloader: DataLoader,
-    submodules: list[torch.nn.Module],
-    chosen_layers: list[int],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    diff_acts_D = None  # will hold ΣΔf
-    pos_acts_D = None  # will hold Σpos
-    neg_acts_D = None  # will hold Σneg
-
-    for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
-            batch
-        )
-
-        model_inputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
-
-        batch_diff_acts_D, batch_pos_acts_D, batch_neg_acts_D = compute_activations(
-            model,
-            model_inputs,
-            labels,
-            chosen_layers,
-            submodules,
-            verbose=False,
-        )
-
-        if diff_acts_D is None:
-            diff_acts_D = torch.zeros_like(batch_diff_acts_D, dtype=torch.float32)
-            pos_acts_D = torch.zeros_like(batch_pos_acts_D, dtype=torch.float32)
-            neg_acts_D = torch.zeros_like(batch_neg_acts_D, dtype=torch.float32)
-
-            assert diff_acts_D.shape == pos_acts_D.shape
-            assert pos_acts_D.shape == neg_acts_D.shape
-
-        diff_acts_D += batch_diff_acts_D.to(torch.float32)
-        pos_acts_D += batch_pos_acts_D.to(torch.float32)
-        neg_acts_D += batch_neg_acts_D.to(torch.float32)
-
-    diff_acts_D /= len(dataloader)
-    pos_acts_D /= int(len(dataloader) * 0.5)
-    neg_acts_D /= int(len(dataloader) * 0.5)
-
-    return diff_acts_D, pos_acts_D, neg_acts_D
-
-
-@torch.no_grad()
-def compute_activations(
-    model: AutoModelForCausalLM,
-    model_inputs: dict[str, torch.Tensor],
-    labels: torch.Tensor,
-    chosen_layers: list[int],
-    final_token_only: bool = False,
-) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-    # assert len(chosen_layers) == 1, "Only one layer is supported for now."
-
-    submodules = [model_utils.get_submodule(model, i) for i in chosen_layers]
-    activations_BLD, logits_BLV = model_utils.get_activations_per_layer(
-        model, submodules, model_inputs, get_final_token_only=False
-    )
-
-    acts_LD = {}
-    for i, j in enumerate(chosen_layers):
-        acts_LD[j] = activations_BLD[submodules[i]]
-
-    all_acts_D = {}
-
-    for j in chosen_layers:
-        layer_acts_BLD = acts_LD[j]
-        layer_acts_BLD *= model_inputs["attention_mask"][:, :, None]
-
-        if final_token_only:
-            raise NotImplementedError("Final token only not implemented for now")
-            layer_acts_BLD = layer_acts_BLD[:, -1:, :]
-
-        # encoded_acts_BLF = encoded_acts_BLF[:, -10:, :]
-
-        pos_mask_B = labels == 1
-        neg_mask_B = labels == 0
-
-        pos_acts_BLD = layer_acts_BLD[pos_mask_B]
-        neg_acts_BLD = layer_acts_BLD[neg_mask_B]
-
-        pos_acts_D = einops.reduce(
-            pos_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
-        )
-        neg_acts_D = einops.reduce(
-            neg_acts_BLD.to(dtype=torch.float32), "b l d -> d", "mean"
-        )
-
-        if pos_mask_B.sum().item() == 0:
-            assert neg_mask_B.sum().item() > 0, "No positive or negative examples"
-            pos_acts_D = torch.zeros_like(neg_acts_D)
-        if neg_mask_B.sum().item() == 0:
-            assert pos_mask_B.sum().item() > 0, "No positive or negative examples"
-            neg_acts_D = torch.zeros_like(pos_acts_D)
-
-        diff_acts_D = pos_acts_D - neg_acts_D
-
-        all_acts_D[j] = (diff_acts_D, pos_acts_D, neg_acts_D)
-
-    return all_acts_D
-
-
-def get_model_activations(
-    model: AutoModelForCausalLM,
-    dataloader: DataLoader,
-    chosen_layers: list[int],
-) -> dict[int, dict[str, torch.Tensor]]:
-    all_acts_D = {}
-    for j in chosen_layers:
-        all_acts_D[j] = {"diff_acts_D": None, "pos_acts_D": None, "neg_acts_D": None}
-
-    for batch in tqdm(dataloader):
-        input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
-            batch
-        )
-
-        model_inputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
-
-        batch_acts_D = compute_activations(
-            model,
-            model_inputs,
-            labels,
-            chosen_layers,
-        )
-
-        for j in chosen_layers:
-            if all_acts_D[j]["diff_acts_D"] is None:
-                all_acts_D[j]["diff_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
-                all_acts_D[j]["pos_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
-                all_acts_D[j]["neg_acts_D"] = torch.zeros_like(
-                    batch_acts_D[j][0], dtype=torch.float32
-                )
-
-                assert (
-                    all_acts_D[j]["diff_acts_D"].shape
-                    == all_acts_D[j]["pos_acts_D"].shape
-                )
-                assert (
-                    all_acts_D[j]["pos_acts_D"].shape
-                    == all_acts_D[j]["neg_acts_D"].shape
-                )
-
-            all_acts_D[j]["diff_acts_D"] += batch_acts_D[j][0].to(torch.float32)
-            all_acts_D[j]["pos_acts_D"] += batch_acts_D[j][1].to(torch.float32)
-            all_acts_D[j]["neg_acts_D"] += batch_acts_D[j][2].to(torch.float32)
-
-    for j in chosen_layers:
-        all_acts_D[j]["diff_acts_D"] /= len(dataloader)
-        all_acts_D[j]["pos_acts_D"] /= int(len(dataloader) * 0.5)
-        all_acts_D[j]["neg_acts_D"] /= int(len(dataloader) * 0.5)
-
-    return all_acts_D
-
-def chunk_and_pool(tensor, reduction_factor=100):
-    batch_size, d = tensor.shape
-    chunk_size = reduction_factor  # Each chunk should have 100 samples
-    n_pooled = (batch_size + chunk_size - 1) // chunk_size  # Number of output samples
-    
-    # Pad if necessary
-    remainder = batch_size % chunk_size
-    if remainder != 0:
-        padding = chunk_size - remainder
-        tensor = torch.cat([tensor, torch.zeros(padding, d, dtype=tensor.dtype, device=tensor.device)])
-    
-    # Reshape and mean pool
-    pooled = tensor[:n_pooled * chunk_size].reshape(n_pooled, chunk_size, d).mean(dim=1)
-    
-    return pooled
-
-
 @torch.no_grad()
 def compute_mean_activations_per_prompt(
     model: AutoModelForCausalLM,
@@ -901,7 +516,6 @@ def compute_mean_activations_per_prompt(
     political_orientation_labels: Optional[torch.Tensor],
     chosen_layers: list[int],
     final_token_only: bool = False,
-    mean_pool: bool = False,
 ) -> dict[int, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
     # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
@@ -944,27 +558,15 @@ def compute_mean_activations_per_prompt(
             pos_acts_BLD = layer_acts_BLD[pos_mask_B]
             neg_acts_BLD = layer_acts_BLD[neg_mask_B]
 
-            if mean_pool:
-                pos_lengths_B1 = model_inputs["attention_mask"][pos_mask_B].sum(dim=1, keepdim=True)
-                neg_lengths_B1 = model_inputs["attention_mask"][neg_mask_B].sum(dim=1, keepdim=True)
+            pos_lengths_B1 = model_inputs["attention_mask"][pos_mask_B].sum(dim=1, keepdim=True)
+            neg_lengths_B1 = model_inputs["attention_mask"][neg_mask_B].sum(dim=1, keepdim=True)
 
-                pos_acts_BD = einops.reduce(
-                    pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
-                ) / pos_lengths_B1.float()
-                neg_acts_BD = einops.reduce(
-                    neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
-                ) / neg_lengths_B1.float()
-            else:
-                raise NotImplementedError("Mean pooling not implemented for now")
-                pos_mask_BL = model_inputs["attention_mask"][pos_mask_B] != 0
-                neg_mask_BL = model_inputs["attention_mask"][neg_mask_B] != 0
-
-                pos_acts_BD = pos_acts_BLD[pos_mask_BL]
-                neg_acts_BD = neg_acts_BLD[neg_mask_BL]
-
-                pos_acts_BD = chunk_and_pool(pos_acts_BD, 20)
-                neg_acts_BD = chunk_and_pool(neg_acts_BD, 20)
-
+            pos_acts_BD = einops.reduce(
+                pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+            ) / pos_lengths_B1.float()
+            neg_acts_BD = einops.reduce(
+                neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+            ) / neg_lengths_B1.float()
 
 
             if pos_mask_B.sum().item() == 0:
@@ -1135,10 +737,34 @@ def get_mean_diff_activations(
             neg_acts_D = neg_acts_BD[layer][bias_type].mean(dim=0)
 
             var_D = torch.cat([pos_acts_BD[layer][bias_type], neg_acts_BD[layer][bias_type]], dim=0).var(dim=0, unbiased=False) + 1e-4
-            mean_diff = (pos_acts_D - neg_acts_D) / (var_D.sqrt() + 1e-4)
+            mean_diff = (pos_acts_D - neg_acts_D) / var_D.sqrt()
             mean_diff = mean_diff / mean_diff.norm()
 
             probe_dirs[layer][bias_type] = {"diff_acts_D": mean_diff}
+
+    
+    for layer in pos_acts_BD:
+
+        # Get bias types available for this layer
+        bias_types = list(pos_acts_BD[layer].keys())
+
+        vectors = []
+
+        for bias_type in bias_types:
+            vectors.append(probe_dirs[layer][bias_type]["diff_acts_D"])
+
+        vectors = intervention_hooks.orthogonalize_vectors(torch.stack(vectors, dim=0)).to(torch.float32)
+
+        for i, bias_type in enumerate(bias_types):
+            mean_diff = vectors[i]
+            probe_dirs[layer][bias_type]["diff_acts_D"] = mean_diff
+            mu_pos = (pos_acts_BD[layer][bias_type] @ mean_diff).mean()
+            mu_neg = (neg_acts_BD[layer][bias_type] @ mean_diff).mean()
+            mu = (mu_pos + mu_neg) / 2
+            probe_dirs[layer][bias_type]["mu_pos"] = mu_pos
+            probe_dirs[layer][bias_type]["mu_neg"] = mu_neg
+            probe_dirs[layer][bias_type]["mu"] = mu
+            print(f"layer {layer} {bias_type} mu_pos {mu_pos} mu_neg {mu_neg} mu {mu}")
 
     return probe_dirs
 
@@ -1218,7 +844,8 @@ def get_probes(
             w_gpu = gpu_probe.net.weight.data.squeeze()
             dir_gpu = w_gpu / w_gpu.norm()
 
-            probe_dirs[layer][bias_type] = {"diff_acts_D": dir_gpu}
+            zero_tensor = torch.zeros(1, device=dir_gpu.device)
+            probe_dirs[layer][bias_type] = {"diff_acts_D": dir_gpu, "mu_pos": zero_tensor, "mu_neg": zero_tensor, "mu": zero_tensor}
             probe_accs[layer][bias_type] = gpu_acc
             print(f"layer {layer:2d} {bias_type:20s} acc {gpu_acc:.3f}")
 
@@ -1232,7 +859,7 @@ def get_ablation_vectors(
     batch_size: int = 64,
     padding_side: str = "left",
     model: Optional[AutoModelForCausalLM] = None,
-) -> dict[int, list[torch.Tensor]]:
+) -> dict[int, dict[str, torch.Tensor]]:
     assert padding_side in ["left", "right"]
     # Remove the bias_type assertion since we're training all types
 
@@ -1355,10 +982,25 @@ def get_ablation_vectors(
         bias_types = [bias_type]
 
     for layer in all_acts_D:
-        intervention_vectors[layer] = []
+        intervention_vectors[layer] = {"diff_acts_D": [], "mu_pos": [], "mu_neg": [], "mu": []}
         for bias_type in bias_types:
-            intervention_vectors[layer].append(
+            intervention_vectors[layer]["diff_acts_D"].append(
                 all_acts_D[layer][bias_type]["diff_acts_D"]
             )
+            intervention_vectors[layer]["mu_pos"].append(
+                all_acts_D[layer][bias_type]["mu_pos"]
+            )
+            intervention_vectors[layer]["mu_neg"].append(
+                all_acts_D[layer][bias_type]["mu_neg"]
+            )
+            intervention_vectors[layer]["mu"].append(
+                all_acts_D[layer][bias_type]["mu"]
+            )
+
+    for layer in intervention_vectors:
+        intervention_vectors[layer]["diff_acts_D"] = torch.stack(intervention_vectors[layer]["diff_acts_D"], dim=0)
+        intervention_vectors[layer]["mu_pos"] = torch.stack(intervention_vectors[layer]["mu_pos"], dim=0)
+        intervention_vectors[layer]["mu_neg"] = torch.stack(intervention_vectors[layer]["mu_neg"], dim=0)
+        intervention_vectors[layer]["mu"] = torch.stack(intervention_vectors[layer]["mu"], dim=0)
 
     return intervention_vectors

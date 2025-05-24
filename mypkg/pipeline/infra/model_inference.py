@@ -340,7 +340,9 @@ def run_single_forward_pass_transformers(
         assert ablation_vectors is not None, "Cannot orthogonalize model without ablation features"
         model = intervention_hooks.orthogonalize_model_weights(model, ablation_vectors)
 
-    for batch_idx, batch in tqdm(enumerate(dataloader), desc="Processing prompts"):
+    for batch_idx, batch in tqdm(
+        enumerate(dataloader), desc="Processing prompts", total=len(dataloader)
+    ):
         input_ids, attention_mask, labels, idx_batch, resume_prompt_results_batch = (
             batch
         )

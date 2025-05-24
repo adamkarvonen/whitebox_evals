@@ -927,12 +927,15 @@ def compute_mean_activations_per_prompt(
             pos_acts_BLD = layer_acts_BLD[pos_mask_B]
             neg_acts_BLD = layer_acts_BLD[neg_mask_B]
 
+            pos_lengths_B1 = model_inputs["attention_mask"][pos_mask_B].sum(dim=1, keepdim=True)
+            neg_lengths_B1 = model_inputs["attention_mask"][neg_mask_B].sum(dim=1, keepdim=True)
+
             pos_acts_BD = einops.reduce(
-                pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
-            )
+                pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+            ) / pos_lengths_B1.float()
             neg_acts_BD = einops.reduce(
-                neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "mean"
-            )
+                neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+            ) / neg_lengths_B1.float()
 
             if pos_mask_B.sum().item() == 0:
                 assert neg_mask_B.sum().item() > 0, (
@@ -1072,6 +1075,42 @@ def get_pos_neg_activations(
 
     return pos_acts_BD, neg_acts_BD
 
+def get_mean_diff_activations(
+    model: AutoModelForCausalLM,
+    dataloader: DataLoader,
+    chosen_layers: list[int],
+) -> dict[int, dict[str, dict[str, torch.Tensor]]]:
+    pos_acts_BD, neg_acts_BD = get_pos_neg_activations(model, dataloader, chosen_layers)
+
+    probe_dirs = {}  # layer → bias_type → unit vector (D,)
+
+    for layer in pos_acts_BD:
+        probe_dirs[layer] = {}
+
+        # Get bias types available for this layer
+        bias_types = list(pos_acts_BD[layer].keys())
+
+        for bias_type in bias_types:
+            if bias_type not in neg_acts_BD[layer]:
+                raise ValueError(
+                    f"Bias type {bias_type} not found in negative activations"
+                )
+
+            assert len(pos_acts_BD[layer][bias_type]) == len(neg_acts_BD[layer][bias_type]), (
+                "Pos and neg acts must have the same number of examples"
+            )
+            
+
+            pos_acts_D = pos_acts_BD[layer][bias_type].mean(dim=0)
+            neg_acts_D = neg_acts_BD[layer][bias_type].mean(dim=0)
+
+            var_D = torch.cat([pos_acts_BD[layer][bias_type], neg_acts_BD[layer][bias_type]], dim=0).var(dim=0, unbiased=False) + 1e-4
+            mean_diff = (pos_acts_D - neg_acts_D) / (var_D.sqrt() + 1e-4)
+            mean_diff = mean_diff / mean_diff.norm()
+
+            probe_dirs[layer][bias_type] = {"diff_acts_D": mean_diff}
+
+    return probe_dirs
 
 def get_probes(
     model: AutoModelForCausalLM,
@@ -1172,7 +1211,9 @@ def get_ablation_vectors(
 
     os.makedirs(eval_config.probe_vectors_dir, exist_ok=True)
     # Update filename to not include specific bias type
-    filename = f"ablation_features_all_biases_{model_name}_{eval_config.probe_training_dataset_name}_{eval_config.probe_training_downsample}.pt".replace(
+    probe_str = "mean_diff" if eval_config.use_mean_diff else "probes"
+
+    filename = f"ablation_features_all_biases_{model_name}_{eval_config.probe_training_dataset_name}_{eval_config.probe_training_downsample}_{probe_str}.pt".replace(
         "/", "_"
     )
     filename = os.path.join(eval_config.probe_vectors_dir, filename)
@@ -1242,18 +1283,25 @@ def get_ablation_vectors(
         num_layers = model_utils.get_num_layers(model)
         all_layers = list(range(num_layers))
 
-        # We always train probes on all layers
-        all_acts_D = get_probes(
-            model,
-            dataloader,
-            all_layers,
-            lr=eval_config.probe_training_lr,
-            weight_decay=eval_config.probe_training_weight_decay,
-            early_stopping_patience=eval_config.probe_training_early_stopping_patience,
-            max_iter=eval_config.probe_training_max_iter,
-            probe_batch_size=eval_config.probe_training_batch_size,
-            testing=eval_config.test_mode,
-        )
+        if eval_config.use_mean_diff:
+            all_acts_D = get_mean_diff_activations(
+                model,
+                dataloader,
+                all_layers,
+            )
+        else:
+            # We always train probes on all layers
+            all_acts_D = get_probes(
+                model,
+                dataloader,
+                all_layers,
+                lr=eval_config.probe_training_lr,
+                weight_decay=eval_config.probe_training_weight_decay,
+                early_stopping_patience=eval_config.probe_training_early_stopping_patience,
+                max_iter=eval_config.probe_training_max_iter,
+                probe_batch_size=eval_config.probe_training_batch_size,
+                testing=eval_config.test_mode,
+            )
 
         torch.save(all_acts_D, filename)
 

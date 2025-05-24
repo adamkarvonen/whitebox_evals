@@ -58,6 +58,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     bias_types_to_iterate: list[str] = field(default_factory=list)
     scales_to_iterate: list[float] = field(default_factory=list)
 
+    use_mean_diff: bool = False
     probe_training_lr: float = 3e-4
     probe_training_weight_decay: float = 0.05
     probe_training_early_stopping_patience: int = 50

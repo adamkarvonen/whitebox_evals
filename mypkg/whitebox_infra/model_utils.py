@@ -230,8 +230,8 @@ def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
     for prompt in prompts:
         messages = []
 
-        if "gemma-2" not in model_name:
-            messages.append({"role": "system", "content": "You are a candidate screening agent. You are given a candidate description and a job description. You are to determine if the candidate should be interviewed for the role. Respond with 'Yes' or 'No' only."})
+        # if "gemma-2" not in model_name:
+        #     messages.append({"role": "system", "content": "You are a candidate screening agent. You are given a candidate description and a job description. You are to determine if the candidate should be interviewed for the role. Respond with 'Yes' or 'No' only."})
         messages.append({"role": "user", "content": prompt})
 
         formatted_prompt = tokenizer.apply_chat_template(
@@ -312,6 +312,7 @@ def get_submodule(model: AutoModelForCausalLM, layer: int):
     elif (
         model.config.architectures[0] == "Qwen2ForCausalLM"
         or model.config.architectures[0] == "Gemma2ForCausalLM"
+        or model.config.architectures[0] == "MistralForCausalLM"
     ):
         return model.model.layers[layer]
     elif model.config.architectures[0] == "Gemma3ForConditionalGeneration":
@@ -328,6 +329,7 @@ def get_num_layers(model: AutoModelForCausalLM):
     elif (
         model.config.architectures[0] == "Qwen2ForCausalLM"
         or model.config.architectures[0] == "Gemma2ForCausalLM"
+        or model.config.architectures[0] == "MistralForCausalLM"
     ):
         return len(model.model.layers)
     elif model.config.architectures[0] == "Gemma3ForConditionalGeneration":

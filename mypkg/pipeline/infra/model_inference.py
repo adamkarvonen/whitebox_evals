@@ -875,6 +875,22 @@ def get_model_activations(
 
     return all_acts_D
 
+def chunk_and_pool(tensor, reduction_factor=100):
+    batch_size, d = tensor.shape
+    chunk_size = reduction_factor  # Each chunk should have 100 samples
+    n_pooled = (batch_size + chunk_size - 1) // chunk_size  # Number of output samples
+    
+    # Pad if necessary
+    remainder = batch_size % chunk_size
+    if remainder != 0:
+        padding = chunk_size - remainder
+        tensor = torch.cat([tensor, torch.zeros(padding, d, dtype=tensor.dtype, device=tensor.device)])
+    
+    # Reshape and mean pool
+    pooled = tensor[:n_pooled * chunk_size].reshape(n_pooled, chunk_size, d).mean(dim=1)
+    
+    return pooled
+
 
 @torch.no_grad()
 def compute_mean_activations_per_prompt(
@@ -885,6 +901,7 @@ def compute_mean_activations_per_prompt(
     political_orientation_labels: Optional[torch.Tensor],
     chosen_layers: list[int],
     final_token_only: bool = False,
+    mean_pool: bool = False,
 ) -> dict[int, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
     # assert len(chosen_layers) == 1, "Only one layer is supported for now."
 
@@ -927,15 +944,28 @@ def compute_mean_activations_per_prompt(
             pos_acts_BLD = layer_acts_BLD[pos_mask_B]
             neg_acts_BLD = layer_acts_BLD[neg_mask_B]
 
-            pos_lengths_B1 = model_inputs["attention_mask"][pos_mask_B].sum(dim=1, keepdim=True)
-            neg_lengths_B1 = model_inputs["attention_mask"][neg_mask_B].sum(dim=1, keepdim=True)
+            if mean_pool:
+                pos_lengths_B1 = model_inputs["attention_mask"][pos_mask_B].sum(dim=1, keepdim=True)
+                neg_lengths_B1 = model_inputs["attention_mask"][neg_mask_B].sum(dim=1, keepdim=True)
 
-            pos_acts_BD = einops.reduce(
-                pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
-            ) / pos_lengths_B1.float()
-            neg_acts_BD = einops.reduce(
-                neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
-            ) / neg_lengths_B1.float()
+                pos_acts_BD = einops.reduce(
+                    pos_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+                ) / pos_lengths_B1.float()
+                neg_acts_BD = einops.reduce(
+                    neg_acts_BLD.to(dtype=torch.float32), "b l d -> b d", "sum"
+                ) / neg_lengths_B1.float()
+            else:
+                raise NotImplementedError("Mean pooling not implemented for now")
+                pos_mask_BL = model_inputs["attention_mask"][pos_mask_B] != 0
+                neg_mask_BL = model_inputs["attention_mask"][neg_mask_B] != 0
+
+                pos_acts_BD = pos_acts_BLD[pos_mask_BL]
+                neg_acts_BD = neg_acts_BLD[neg_mask_BL]
+
+                pos_acts_BD = chunk_and_pool(pos_acts_BD, 20)
+                neg_acts_BD = chunk_and_pool(neg_acts_BD, 20)
+
+
 
             if pos_mask_B.sum().item() == 0:
                 assert neg_mask_B.sum().item() > 0, (
@@ -1144,9 +1174,11 @@ def get_probes(
             pos_acts = pos_acts_BD[layer][bias_type]
             neg_acts = neg_acts_BD[layer][bias_type]
 
-            assert len(pos_acts) == len(neg_acts), (
-                "Pos and neg acts must have the same number of examples"
-            )
+            if len(pos_acts) != len(neg_acts):
+                print(f"\n\n\nWARNING: Pos and neg acts have different lengths: {len(pos_acts)} != {len(neg_acts)}\n\n\n")
+                # min_len = min(len(pos_acts), len(neg_acts))
+                # pos_acts = pos_acts[:min_len]
+                # neg_acts = neg_acts[:min_len]
 
             X = torch.cat([pos_acts, neg_acts], dim=0)
             y = torch.cat(

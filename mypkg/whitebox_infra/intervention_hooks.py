@@ -190,6 +190,27 @@ def orthogonalize_matrix_to_directions(
 
     return W_ortho.to(dtype=torch.bfloat16)
 
+def get_model_layers(model):
+    """Get the layers attribute regardless of model architecture."""
+    if hasattr(model, 'language_model'):
+        return model.language_model.layers
+    elif hasattr(model, 'model'):
+        return model.model.layers
+    elif hasattr(model, 'transformer'):
+        return model.transformer.h  # For GPT-2 style models
+    else:
+        raise AttributeError(f"Could not find layers in model of type {type(model)}")
+
+def get_embed_tokens(model):
+    """Get the embedding layer regardless of model architecture."""
+    if hasattr(model, 'language_model'):
+        return model.language_model.embed_tokens
+    elif hasattr(model, 'model'):
+        return model.model.embed_tokens
+    elif hasattr(model, 'transformer'):
+        return model.transformer.wte  # For GPT-2 style models
+    else:
+        raise AttributeError(f"Could not find embed_tokens in model of type {type(model)}")
 
 def orthogonalize_model_weights(
     model: AutoModelForCausalLM,
@@ -206,16 +227,19 @@ def orthogonalize_model_weights(
 
     for layer_idx, layer_dir in layer_directions.items():
         layer_directions[layer_idx] = orthogonalize_vectors(torch.stack(layer_dir).to(dtype=torch.float32))
-    
+
+    layers = get_model_layers(model)
+    embed_tokens = get_embed_tokens(model)
+
     # 1. Orthogonalize embedding matrix (affects all layers)
     if 0 in layer_directions:
-        model.model.embed_tokens.weight.data = orthogonalize_matrix_to_directions(
-            model.model.embed_tokens.weight.data.T,  # Transpose to (d_model, vocab_size)
+        embed_tokens.weight.data = orthogonalize_matrix_to_directions(
+            embed_tokens.weight.data.T,  # Transpose to (d_model, vocab_size)
             layer_directions[0]
         ).T  # Transpose back
     
     # 2. Orthogonalize each layer's output projections
-    for layer_idx, layer in enumerate(model.model.layers):
+    for layer_idx, layer in enumerate(layers):
         if layer_idx not in layer_directions:
             continue
             
@@ -276,7 +300,7 @@ def get_projection_ablation_hook(
         )
         delta_BLD: Float[Tensor, "batch seq_len d_model"] = delta_BLKD.sum(dim=2)
 
-        resid_BLD = resid_BLD - delta_BLD.to(dtype=resid_BLD.dtype)
+        resid_BLD = resid_BLD - (delta_BLD.to(dtype=resid_BLD.dtype) * 1.0)
 
         return (resid_BLD,) + output[1:]
 

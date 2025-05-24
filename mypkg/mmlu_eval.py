@@ -18,24 +18,23 @@ if __name__ == "__main__":
     cfg = EvalConfig.from_yaml(config_file)
     dtype = torch.bfloat16
 
-    # tasks = [
-    #     "mmlu_high_school_statistics",
-    #     "mmlu_high_school_computer_science",
-    #     "mmlu_high_school_mathematics",
-    #     "mmlu_high_school_physics",
-    #     "mmlu_high_school_biology",
-    # ]
+    tasks = [
+        "mmlu_high_school_statistics",
+        "mmlu_high_school_computer_science",
+        "mmlu_high_school_mathematics",
+        "mmlu_high_school_physics",
+    ]
 
-    tasks = ["mmlu"]
+    # tasks = ["mmlu"]
 
     output_folder = "mmlu_ablation_results"
     os.makedirs(output_folder, exist_ok=True)
 
     for model_name in cfg.model_names_to_iterate:
         filename = f"{output_folder}/{model_name.replace('/', '_')}.pkl"
-        if os.path.exists(filename):
-            print(f"Skipping {model_name} because it already exists")
-            continue
+        # if os.path.exists(filename):
+        #     print(f"Skipping {model_name} because it already exists")
+        #     continue
 
         start_time = time.time()
         print(f"Evaluating {model_name}...")
@@ -68,16 +67,17 @@ if __name__ == "__main__":
             num_fewshot=0,
             task_manager=task_manager,
         )
+        # base_results = {}
 
         handles = []
 
-        for layer_idx, ablation_vectors in ablation_vectors.items():
+        for layer_idx, vec_dict in ablation_vectors.items():
             ablation_hook = intervention_hooks.get_ablation_hook(
                 "projection_ablations",
-                ablation_vectors,
+                vec_dict["diff_acts_D"],
                 None,
                 None,
-                None,
+                vec_dict["mu"],
             )
 
             submodule = model_utils.get_submodule(model, layer_idx)

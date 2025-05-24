@@ -6,6 +6,7 @@ from dataclasses import asdict
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import time
+import gc
 
 from mypkg.eval_config import EvalConfig
 from mypkg.pipeline.infra import model_inference
@@ -26,7 +27,6 @@ if __name__ == "__main__":
     # ]
 
     tasks = ["mmlu"]
-
 
     output_folder = "mmlu_ablation_results"
     os.makedirs(output_folder, exist_ok=True)
@@ -95,11 +95,11 @@ if __name__ == "__main__":
             for handle in handles:
                 handle.remove()
 
-
         filename = f"{output_folder}/{model_name.replace('/', '_')}.pkl"
         results = {
             "base_results": base_results,
             "intervention_results": intervention_results,
+            "eval_config": cfg.model_dump(),
         }
 
         with open(filename, "wb") as f:
@@ -107,3 +107,9 @@ if __name__ == "__main__":
 
         end_time = time.time()
         print(f"Time taken: {end_time - start_time} seconds")
+
+        del model
+        del lm_obj
+
+        torch.cuda.empty_cache()
+        gc.collect()

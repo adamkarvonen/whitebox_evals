@@ -1,8 +1,8 @@
 resume_dataset_path: "data/resume/selected_cats_resumes.csv"
 
-inference_mode: gpu_forward_pass     # REQUIRED (e.g. gpu_forward_pass, gpu_inference, perform_ablations, …)
+# inference_mode: gpu_forward_pass     # REQUIRED (e.g. gpu_forward_pass, gpu_inference, perform_ablations, …)
 # inference_mode: perform_ablations
-# inference_mode: projection_ablations
+inference_mode: projection_ablations
 
 random_seed: 42
 
@@ -17,8 +17,8 @@ job_description_folder: "job_descriptions"
 email_domain: "gmail"
 
 industry: "INFORMATION-TECHNOLOGY"
-anthropic_dataset: false
-downsample: 50
+anthropic_dataset: true
+downsample: 30
 no_names: false
 college_name_only: false
 
@@ -27,7 +27,7 @@ scale: 1000.0
 bias_type: "N/A"
 
 
-probe_training_weight_decay: 0.001
+probe_training_weight_decay: 0.01
 probe_training_early_stopping_patience: 50
 probe_training_max_iter: 500
 probe_training_batch_size: 4096
@@ -36,12 +36,10 @@ probe_training_dataset_name: "anthropic"
 # probe_training_dataset_name: "resumes"
 probe_training_overwrite_previous: false
 
-orthogonalize_model: false
-
 model_names_to_iterate:
   # - "google/gemma-2-2b-it"
-  # - "mistralai/Ministral-8B-Instruct-2410"
-  - "mistralai/Mistral-Small-24B-Instruct-2501"
+  - "mistralai/Ministral-8B-Instruct-2410"
+  # - "mistralai/Mistral-Small-24B-Instruct-2501"
   # - "google/gemma-2-9b-it"
   # - "google/gemma-2-27b-it"
   

@@ -226,6 +226,7 @@ async def main(
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
+                eval_config=frozen_eval_config,
                 batch_size=batch_size,
                 max_length=total_max_length,
                 collect_activations=False,
@@ -249,6 +250,7 @@ async def main(
             results = model_inference.run_single_forward_pass_transformers(
                 prompts,
                 model_name,
+                eval_config=frozen_eval_config,
                 batch_size=batch_size,
                 ablation_vectors=ablation_vectors,
                 ablation_type="projection_ablations",

@@ -277,10 +277,12 @@ def create_all_prompts_hiring_bias(
                 resume=resume,
             )
 
+            task_prompt = system_prompt.split('{')[0]
+
             result = ResumePromptResult(
                 prompt=prompt,
                 system_prompt=system_prompt,
-                task_prompt="",
+                task_prompt=task_prompt,
                 resume=resume,
                 name=name,
                 gender=gender,

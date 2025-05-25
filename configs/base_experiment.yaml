@@ -18,25 +18,28 @@ email_domain: "gmail"
 
 industry: "INFORMATION-TECHNOLOGY"
 anthropic_dataset: false
-downsample: 50
+downsample: 150
 no_names: false
 college_name_only: false
+# college_name_only: true
 
 # Ablation-only parameters
 scale: 1000.0
 bias_type: "N/A"
 
-
-probe_training_weight_decay: 0.001
+use_mean_diff: true
+# use_mean_diff: false
+probe_training_weight_decay: 0.00
 probe_training_early_stopping_patience: 50
 probe_training_max_iter: 500
-probe_training_batch_size: 4096
+probe_training_batch_size: 16000
 probe_training_begin_layer_percent: 0
 probe_training_dataset_name: "anthropic"
 # probe_training_dataset_name: "resumes"
 probe_training_overwrite_previous: false
 
 orthogonalize_model: false
+# orthogonalize_model: true
 
 model_names_to_iterate:
   # - "google/gemma-2-2b-it"
@@ -44,14 +47,18 @@ model_names_to_iterate:
   - "mistralai/Mistral-Small-24B-Instruct-2501"
   # - "google/gemma-2-9b-it"
   # - "google/gemma-2-27b-it"
+  - "google/gemma-3-12b-it"
   
 
 anti_bias_statement_files_to_iterate:
   - "v2.txt"
+  - "v11.txt"
+  - "v13.txt"
+  - "v0.txt"
 
 job_description_files_to_iterate:
   - "meta_job_description.txt"
-  # - "base_description.txt"
+  - "base_description.txt"
 
 scales_to_iterate:
   - 1000.0

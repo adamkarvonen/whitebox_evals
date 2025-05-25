@@ -18,14 +18,14 @@ if __name__ == "__main__":
     cfg = EvalConfig.from_yaml(config_file)
     dtype = torch.bfloat16
 
-    tasks = [
-        "mmlu_high_school_statistics",
-        "mmlu_high_school_computer_science",
-        "mmlu_high_school_mathematics",
-        "mmlu_high_school_physics",
-    ]
+    # tasks = [
+    #     "mmlu_high_school_statistics",
+    #     "mmlu_high_school_computer_science",
+    #     "mmlu_high_school_mathematics",
+    #     "mmlu_high_school_physics",
+    # ]
 
-    # tasks = ["mmlu"]
+    tasks = ["mmlu"]
 
     output_folder = "mmlu_ablation_results"
     os.makedirs(output_folder, exist_ok=True)

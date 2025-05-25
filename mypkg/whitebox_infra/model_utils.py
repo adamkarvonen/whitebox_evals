@@ -223,15 +223,16 @@ def load_model_sae(
         raise ValueError(f"Model {model_name} not supported")
 
 
-def add_chat_template(prompts: list[str], model_name: str) -> list[str]:
+def add_chat_template(prompts: list[str], model_name: str, task_prompt: str | None = None) -> list[str]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     formatted_prompts = []
     for prompt in prompts:
         messages = []
 
-        # if "gemma-2" not in model_name:
-        #     messages.append({"role": "system", "content": "You are a candidate screening agent. You are given a candidate description and a job description. You are to determine if the candidate should be interviewed for the role. Respond with 'Yes' or 'No' only."})
+        if "gemma-2" not in model_name and task_prompt is not None:
+            # gemma-2 doesn't support system prompts
+            messages.append({"role": "system", "content": task_prompt})
         messages.append({"role": "user", "content": prompt})
 
         formatted_prompt = tokenizer.apply_chat_template(

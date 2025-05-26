@@ -11,13 +11,36 @@ import mypkg.whitebox_infra.dictionaries.jumprelu_sae as jumprelu_sae
 # Model configuration mapping
 MODEL_CONFIGS = {
     "google/gemma-2-2b-it": {
+        "batch_size": 1,
+    },
+    "google/gemma-2-9b-it": {
+        "batch_size": 4,
+    },
+    "google/gemma-2-27b-it": {
+        "batch_size": 1,
+    },
+    "google/gemma-3-12b-it": {
+        "batch_size": 4,
+    },
+    "google/gemma-3-27b-it": {
+        "batch_size": 1,
+    },
+    "mistralai/Ministral-8B-Instruct-2410": {
+        "batch_size": 8,
+    },
+    "mistralai/Mistral-Small-24B-Instruct-2501": {
+        "batch_size": 4,
+    },
+}
+
+MODEL_SAE_CONFIGS = {
+    "google/gemma-2-2b-it": {
         "total_layers": 26,  # Adding for reference
         "layer_mappings": {
             25: {"layer": 5},
             50: {"layer": 12},
             75: {"layer": 19},
         },
-        "batch_size": 1,
         "trainer_id": 65,
     },
     "google/gemma-2-9b-it": {
@@ -27,7 +50,6 @@ MODEL_CONFIGS = {
             50: {"layer": 20},
             75: {"layer": 31},
         },
-        "batch_size": 4,
         "trainer_id": 131,
     },
     "google/gemma-2-27b-it": {
@@ -37,11 +59,7 @@ MODEL_CONFIGS = {
             50: {"layer": 22},
             75: {"layer": 34},
         },
-        "batch_size": 1,
         "trainer_id": 131,
-    },
-    "google/gemma-3-12b-it": {
-        "batch_size": 4,
     },
     "mistralai/Ministral-8B-Instruct-2410": {
         "total_layers": 36,
@@ -50,7 +68,6 @@ MODEL_CONFIGS = {
             50: {"layer": 18},
             75: {"layer": 27},
         },
-        "batch_size": 8,
         "trainer_id": 2,
     },
     "mistralai/Mistral-Small-24B-Instruct-2501": {
@@ -60,18 +77,7 @@ MODEL_CONFIGS = {
             50: {"layer": 20},
             75: {"layer": 30},
         },
-        "batch_size": 4,
         "trainer_id": 2,
-    },
-    "Qwen/Qwen2.5-3B-Instruct": {
-        "total_layers": 36,
-        "layer_mappings": {
-            25: {"layer": 9},
-            50: {"layer": 18},
-            75: {"layer": 27},
-        },
-        "batch_size": 16,
-        "trainer_id": -1,
     },
 }
 

@@ -31,7 +31,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     anti_bias_statement_file: str = ""
     job_description_file: str = ""
     system_prompt_filename: str = "yes_no.txt"
-    anti_bias_statement_folder: str = "generated_anti_bias_statements"
+    anti_bias_statement_folder: str = "anti_bias_statements"
     job_description_folder: str = "job_descriptions"
 
     email_domain: str = "gmail"

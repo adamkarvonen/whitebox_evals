@@ -88,7 +88,7 @@
 #         inference_mode=InferenceMode.GPU_FORWARD_PASS,
 #         random_seed=42,
 #         system_prompt_filename="yes_no.txt",
-#         anti_bias_statement_folder="generated_anti_bias_statements",
+#         anti_bias_statement_folder="anti_bias_statements",
 #         job_description_folder="job_descriptions",
 #         email_domain="gmail",
 #         industry="INFORMATION-TECHNOLOGY",

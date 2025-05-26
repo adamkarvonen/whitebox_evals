@@ -11,7 +11,7 @@ model_name: ""
 anti_bias_statement_file: ""
 job_description_file: ""
 system_prompt_filename: "yes_no.txt"
-anti_bias_statement_folder: "generated_anti_bias_statements"
+anti_bias_statement_folder: "anti_bias_statements"
 job_description_folder: "job_descriptions"
 
 email_domain: "gmail"
@@ -51,10 +51,11 @@ model_names_to_iterate:
   
 
 anti_bias_statement_files_to_iterate:
-  - "v2.txt"
-  - "v11.txt"
+  # - "v2.txt"
+  - "v3.txt"
+  # - "v11.txt"
   - "v13.txt"
-  - "v0.txt"
+  # - "v0.txt"
 
 job_description_files_to_iterate:
   - "meta_job_description.txt"

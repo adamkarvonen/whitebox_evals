@@ -139,7 +139,7 @@ async def main(
     if eval_config.model_name in REASONING_MODELS:
         max_completion_tokens = None
 
-    if eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
+    if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
         # We load this here because it often takes ~1 minute to load
         import vllm
 
@@ -258,6 +258,18 @@ async def main(
                 orthogonalize_model=frozen_eval_config.orthogonalize_model,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
+            batch_size = (
+                model_utils.MODEL_CONFIGS[model_name]["batch_size"]
+                * frozen_eval_config.batch_size_multiplier
+            )
+            results = model_inference.run_inference_transformers(
+                prompts,
+                model_name,
+                batch_size=batch_size,
+                max_new_tokens=max_completion_tokens,
+                max_length=total_max_length,
+            )
+        elif frozen_eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,

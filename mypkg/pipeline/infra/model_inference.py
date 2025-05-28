@@ -206,7 +206,12 @@ def run_inference_transformers(
 
     original_prompts = [p.prompt for p in prompt_dicts]
 
-    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
+    task_prompt = prompt_dicts[0].task_prompt
+
+    formatted_prompts = model_utils.add_chat_template(
+        original_prompts, model_name, task_prompt=task_prompt
+    )
+    
     dataloader = data_utils.create_simple_dataloader(
         formatted_prompts,
         [0] * len(formatted_prompts),

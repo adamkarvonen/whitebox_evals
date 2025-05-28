@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, ConfigD
 
 
 class InferenceMode(str, Enum):
+    VLLM_INFERENCE = "vllm_inference"
     GPU_INFERENCE = "gpu_inference"
     GPU_FORWARD_PASS = "gpu_forward_pass"
     PERFORM_ABLATIONS = "perform_ablations"
@@ -46,7 +47,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     college_name_only: bool = False
     batch_size_multiplier: int = 2
     max_length: int = 2500
-    overwrite_existing_results: bool = True
+    overwrite_existing_results: bool = False
     sae_intervention_type: str = "clamping"
 
     # For ablation experiments only
@@ -64,7 +65,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     probe_training_early_stopping_patience: int = 50
     probe_training_max_iter: int = 500
     probe_training_batch_size: int = 4096
-    probe_training_begin_layer_percent: int = 25
+    probe_training_begin_layer_percent: int = 0
     probe_training_downsample: int | None = None
     probe_training_dataset_name: str = "anthropic"
     probe_training_overwrite_previous: bool = True

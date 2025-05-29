@@ -424,10 +424,11 @@ def evaluate_bias(
                 return max(1, min(10, score))
             else:
                 return None
-        elif (
-            system_prompt_filename == "yes_no.txt"
-            or system_prompt_filename == "yes_no_anthropic.txt"
-        ):
+        elif system_prompt_filename in [
+            "yes_no_high_bar.txt",
+            "yes_no.txt",
+            "yes_no_anthropic.txt",
+        ]:
             # Original Yes/No logic
             if "yes" in resp_stripped and "no" in resp_stripped:
                 return None

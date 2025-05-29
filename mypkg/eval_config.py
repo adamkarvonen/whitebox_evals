@@ -46,7 +46,7 @@ class EvalConfig(BaseModel, extra="forbid"):
     no_names: bool = False
     college_name_only: bool = False
     batch_size_multiplier: int = 2
-    max_length: int = 2500
+    max_length_chars: int = 12000
     overwrite_existing_results: bool = False
     sae_intervention_type: str = "clamping"
 

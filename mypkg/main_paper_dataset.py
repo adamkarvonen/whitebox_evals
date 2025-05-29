@@ -141,10 +141,6 @@ async def main(
 
     all_results = {}
 
-    if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
-        prev_model_name = None
-        vllm_model = None
-
     for (
         model_name,
         anti_bias_statement_file,
@@ -219,7 +215,6 @@ async def main(
                 model_name,
                 eval_config=frozen_eval_config,
                 batch_size=batch_size,
-                max_length=total_max_length,
                 collect_activations=False,
             )
         elif (
@@ -245,7 +240,6 @@ async def main(
                 batch_size=batch_size,
                 ablation_vectors=ablation_vectors,
                 ablation_type="projection_ablations",
-                max_length=total_max_length,
                 orthogonalize_model=frozen_eval_config.orthogonalize_model,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
@@ -258,15 +252,12 @@ async def main(
                 model_name,
                 batch_size=batch_size,
                 max_new_tokens=max_completion_tokens,
-                max_length=total_max_length,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
-                max_length=total_max_length,
                 max_new_tokens=max_completion_tokens,
-                model=vllm_model,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.LOGIT_LENS.value:
             batch_size = (
@@ -278,7 +269,6 @@ async def main(
                 model_name,
                 add_final_layer=False,
                 batch_size=batch_size,
-                max_length=total_max_length,
                 use_tuned_lenses=True,
             )
         elif frozen_eval_config.inference_mode == InferenceMode.OPEN_ROUTER.value:

@@ -145,19 +145,10 @@ def run_inference_vllm(
 
     prompt_token_ids = [input_ids for input_ids in tokenized_inputs["input_ids"]]
 
-    filtered_prompt_token_ids = []
-
-    orig_length = len(prompt_token_ids)
-    for input_ids in prompt_token_ids:
-        if len(input_ids) <= max_length:
-            filtered_prompt_token_ids.append(input_ids)
-    prompt_token_ids = filtered_prompt_token_ids
-
-    print(f"Filtered {orig_length - len(prompt_token_ids)} prompts, now {len(prompt_token_ids)} prompts")
-
-
     if model is None:
-        model = vllm.LLM(model=model_name, dtype="bfloat16", max_model_len=max_length + max_new_tokens + 100)
+        MAX_MODEL_LEN = 4800
+        # enforce_eager=True adds 30% runtime but speeds model loading from 120 seconds to 10 seconds. If performing a ton of VLLM inference, consider moving VLLM model loading to beginning of main_paper_dataset.py for loop
+        model = vllm.LLM(model=model_name, dtype="bfloat16", max_model_len=MAX_MODEL_LEN, enforce_eager=True)
 
     # Create sampling parameters
     sampling_params = vllm.SamplingParams(
@@ -993,7 +984,7 @@ def get_ablation_vectors(
             model_name,
             device,
             batch_size=batch_size,
-            max_length=eval_config.max_length,
+            max_length=eval_config.max_length_chars,
         )
 
         num_layers = model_utils.get_num_layers(model)

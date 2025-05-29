@@ -172,34 +172,6 @@ async def main(
         print(f"Running with scale: {scale}")
         print(f"Running with bias type: {bias_type}")
 
-        if eval_config.inference_mode != InferenceMode.OPEN_ROUTER.value:
-            with open(f"prompts/job_descriptions/{job_description}", "r") as f:
-                job_description_text = f.read()
-
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            job_description_length = len(tokenizer.encode(job_description_text))
-            print(f"Job description length: {job_description_length}")
-
-            total_max_length = frozen_eval_config.max_length + job_description_length
-            print(f"Total max length: {total_max_length}")
-
-        
-        if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
-            # We load this here because it often takes ~1 minute to load
-            import vllm
-
-            FIXED_MAX_LENGTH = 4800
-            if eval_config.model_name != prev_model_name:
-
-                if vllm_model is not None:
-                    print(f"Cleaning up previous model: {prev_model_name}")
-                    del vllm_model
-                    torch.cuda.empty_cache()  # Clear GPU memory
-                    gc.collect()
-                print(f"Loading model: {eval_config.model_name}")
-                vllm_model = vllm.LLM(model=eval_config.model_name, dtype="bfloat16", max_model_len=FIXED_MAX_LENGTH, enforce_eager=True)
-                prev_model_name = eval_config.model_name
-
 
         results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
             ".txt", ""
@@ -230,6 +202,9 @@ async def main(
             prompts = hiring_bias_prompts.create_all_prompts_hiring_bias(
                 df, frozen_eval_config
             )
+            original_length = len(prompts)
+            prompts = [prompt for prompt in prompts if len(prompt.resume) <= frozen_eval_config.max_length_chars]
+            print(f"Filtered {original_length - len(prompts)} prompts, now {len(prompts)} prompts")
 
         gc.collect()
         torch.cuda.empty_cache()

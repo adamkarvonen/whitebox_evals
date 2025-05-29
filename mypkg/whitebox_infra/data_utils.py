@@ -150,6 +150,7 @@ def create_simple_dataloader(
             f"Filtered out {original_length - new_length} samples that exceeded max_length ({max_length})"
         )
         print(f"Original dataset size: {original_length}, new size: {new_length}")
+        raise ValueError("We shouldn't be filtering out samples here anymore, it should be done in the main_paper_dataset.py file")
 
     if sort_by_length:
         assert shuffle is False, "Cannot shuffle if sorting by length"

@@ -125,9 +125,8 @@ def run_inference_vllm(
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
     import vllm
 
-    if model is None:
-        model = vllm.LLM(model=model_name, dtype="bfloat16")
     original_prompts = [p.prompt for p in prompt_dicts]
+    task_prompt = prompt_dicts[0].task_prompt
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     if tokenizer.pad_token_id is None:
@@ -135,17 +134,30 @@ def run_inference_vllm(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Format prompts with chat template if needed
-    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name)
+    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name, task_prompt=task_prompt)
     tokenized_inputs = tokenizer(
         formatted_prompts,
         padding=False,
         return_tensors=None,
         add_special_tokens=False,
-        truncation=True,
-        max_length=max_length,
+        truncation=False,
     )
 
     prompt_token_ids = [input_ids for input_ids in tokenized_inputs["input_ids"]]
+
+    filtered_prompt_token_ids = []
+
+    orig_length = len(prompt_token_ids)
+    for input_ids in prompt_token_ids:
+        if len(input_ids) <= max_length:
+            filtered_prompt_token_ids.append(input_ids)
+    prompt_token_ids = filtered_prompt_token_ids
+
+    print(f"Filtered {orig_length - len(prompt_token_ids)} prompts, now {len(prompt_token_ids)} prompts")
+
+
+    if model is None:
+        model = vllm.LLM(model=model_name, dtype="bfloat16", max_model_len=max_length + max_new_tokens + 100)
 
     # Create sampling parameters
     sampling_params = vllm.SamplingParams(

@@ -139,30 +139,28 @@ async def main(
     if eval_config.model_name in REASONING_MODELS:
         max_completion_tokens = None
 
-    if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
-        # We load this here because it often takes ~1 minute to load
-        import vllm
-
-        vllm_model = vllm.LLM(model=eval_config.model_name, dtype="bfloat16")
-
     all_results = {}
 
+    if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
+        prev_model_name = None
+        vllm_model = None
+
     for (
+        model_name,
         anti_bias_statement_file,
         job_description,
-        model_name,
         scale,
         bias_type,
     ) in itertools.product(
+        eval_config.model_names_to_iterate,
         eval_config.anti_bias_statement_files_to_iterate,
         eval_config.job_description_files_to_iterate,
-        eval_config.model_names_to_iterate,
         eval_config.scales_to_iterate,
         eval_config.bias_types_to_iterate,
     ):
+        eval_config.model_name = model_name
         eval_config.anti_bias_statement_file = anti_bias_statement_file
         eval_config.job_description_file = job_description
-        eval_config.model_name = model_name
         eval_config.scale = scale
         eval_config.bias_type = bias_type
 
@@ -184,6 +182,24 @@ async def main(
 
             total_max_length = frozen_eval_config.max_length + job_description_length
             print(f"Total max length: {total_max_length}")
+
+        
+        if eval_config.inference_mode == InferenceMode.VLLM_INFERENCE.value:
+            # We load this here because it often takes ~1 minute to load
+            import vllm
+
+            FIXED_MAX_LENGTH = 4800
+            if eval_config.model_name != prev_model_name:
+
+                if vllm_model is not None:
+                    print(f"Cleaning up previous model: {prev_model_name}")
+                    del vllm_model
+                    torch.cuda.empty_cache()  # Clear GPU memory
+                    gc.collect()
+                print(f"Loading model: {eval_config.model_name}")
+                vllm_model = vllm.LLM(model=eval_config.model_name, dtype="bfloat16", max_model_len=FIXED_MAX_LENGTH, enforce_eager=True)
+                prev_model_name = eval_config.model_name
+
 
         results_filename = f"score_results_{anti_bias_statement_file}_{job_description}_{model_name}_{str(scale).replace('.', '_')}_{bias_type}.pkl".replace(
             ".txt", ""
@@ -273,6 +289,7 @@ async def main(
             results = model_inference.run_inference_vllm(
                 prompts,
                 model_name,
+                max_length=total_max_length,
                 max_new_tokens=max_completion_tokens,
                 model=vllm_model,
             )

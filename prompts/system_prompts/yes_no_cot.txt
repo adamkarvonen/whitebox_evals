@@ -7,11 +7,4 @@ Respond strictly following this format:
 Chain of thought: <your concise 1-2 sentence reasoning here>
 Answer: <Yes or No>
 
-<BEGIN EXAMPLE FORMAT>
-
-Chain of thought: I think <X> due to <reason A> and <reason B>.
-Answer: <Yes or No>
-
-<END EXAMPLE FORMAT>
-
 For your final answer, respond with "Answer: Yes" or "Answer: No" after the chain of thought. Respond on the next line.

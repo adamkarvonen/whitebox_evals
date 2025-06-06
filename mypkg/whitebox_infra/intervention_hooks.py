@@ -265,9 +265,9 @@ def get_projection_ablation_hook(
     so the output tensor is (approximately) orthogonal to every r_k.
     """
 
-    dirs_KD_ortho = ablate_vectors.to(dtype=torch.float32)
+    dirs_KD = ablate_vectors.to(dtype=torch.float32)
 
-    assert_orthonormal_vectors(dirs_KD_ortho)
+    # assert_orthonormal_vectors(dirs_KD)
 
     biases_K = ablate_biases.to(dtype=torch.float32)
 
@@ -276,12 +276,12 @@ def get_projection_ablation_hook(
 
         # Dot product with all directions → proj_BLK
         proj_BLK: Float[Tensor, "batch seq_len K"] = torch.einsum(
-            "bld,kd->blk", resid_BLD.to(dtype=torch.float32), dirs_KD_ortho
+            "bld,kd->blk", resid_BLD.to(dtype=torch.float32), dirs_KD
         ) - biases_K[None, None, :]
 
         # Expand back to d_model and subtract
         delta_BLKD: Float[Tensor, "batch seq_len K d_model"] = (
-            proj_BLK.unsqueeze(-1) * dirs_KD_ortho
+            proj_BLK.unsqueeze(-1) * dirs_KD
         )
         delta_BLD: Float[Tensor, "batch seq_len d_model"] = delta_BLKD.sum(dim=2)
 

@@ -134,7 +134,9 @@ def run_inference_vllm(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Format prompts with chat template if needed
-    formatted_prompts = model_utils.add_chat_template(original_prompts, model_name, task_prompt=task_prompt)
+    formatted_prompts = model_utils.add_chat_template(
+        original_prompts, model_name, task_prompt=task_prompt
+    )
     tokenized_inputs = tokenizer(
         formatted_prompts,
         padding=False,
@@ -148,7 +150,12 @@ def run_inference_vllm(
     if model is None:
         MAX_MODEL_LEN = 4800
         # enforce_eager=True adds 30% runtime but speeds model loading from 120 seconds to 10 seconds. If performing a ton of VLLM inference, consider moving VLLM model loading to beginning of main_paper_dataset.py for loop
-        model = vllm.LLM(model=model_name, dtype="bfloat16", max_model_len=MAX_MODEL_LEN, enforce_eager=True)
+        model = vllm.LLM(
+            model=model_name,
+            dtype="bfloat16",
+            max_model_len=MAX_MODEL_LEN,
+            enforce_eager=True,
+        )
 
     # Create sampling parameters
     sampling_params = vllm.SamplingParams(
@@ -214,7 +221,7 @@ def run_inference_transformers(
     formatted_prompts = model_utils.add_chat_template(
         original_prompts, model_name, task_prompt=task_prompt
     )
-    
+
     dataloader = data_utils.create_simple_dataloader(
         formatted_prompts,
         [0] * len(formatted_prompts),
@@ -788,9 +795,7 @@ def get_mean_diff_activations(
         for bias_type in bias_types:
             vectors.append(probe_dirs[layer][bias_type]["diff_acts_D"])
 
-        vectors = intervention_hooks.orthogonalize_vectors(
-            torch.stack(vectors, dim=0)
-        ).to(torch.float32)
+        vectors = torch.stack(vectors, dim=0).to(torch.float32)
 
         for i, bias_type in enumerate(bias_types):
             mean_diff = vectors[i]

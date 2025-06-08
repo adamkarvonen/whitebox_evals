@@ -242,6 +242,14 @@ async def main(
                 ablation_type="projection_ablations",
                 orthogonalize_model=frozen_eval_config.orthogonalize_model,
             )
+
+
+            # results = model_inference.run_inference_transformers(
+            #     prompts,
+            #     model_name,
+            #     batch_size=batch_size,
+            #     ablation_vectors=ablation_vectors,
+            # )
         elif frozen_eval_config.inference_mode == InferenceMode.GPU_INFERENCE.value:
             batch_size = (
                 model_utils.MODEL_CONFIGS[model_name]["batch_size"]

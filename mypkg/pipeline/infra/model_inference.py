@@ -196,7 +196,7 @@ def run_inference_transformers(
     prompt_dicts: list[hiring_bias_prompts.ResumePromptResult],
     model_name: str,
     batch_size: int = 64,
-    ablation_features: Optional[torch.Tensor] = None,
+    ablation_vectors: Optional[dict[int, dict[str, torch.Tensor]]] = None,
     max_new_tokens: int = 200,
     max_length: int = 8192,
 ) -> list[hiring_bias_prompts.ResumePromptResult]:
@@ -232,18 +232,36 @@ def run_inference_transformers(
         max_length=max_length,
     )
 
-    if ablation_features is not None:
-        raise ValueError("Currently broken, see gpu_forward_pass")
-        sae = model_utils.load_model_sae(model_name, device, dtype, 25, trainer_id=1)
-        encoder_vectors, decoder_vectors, encoder_biases = (
-            intervention_hooks.get_sae_vectors(ablation_features, sae)
-        )
-        scales = [0.0] * len(encoder_vectors)
-        ablation_hook = intervention_hooks.get_conditional_clamping_hook(
-            encoder_vectors, decoder_vectors, scales, encoder_biases
-        )
-        submodule = model_utils.get_submodule(model, sae.hook_layer)
-        handle = submodule.register_forward_hook(ablation_hook)
+    ablation_features_dict = None
+    handles = None
+
+    if ablation_vectors is not None:
+        ablation_features_dict = {}
+        for layer, vec_dict in ablation_vectors.items():
+            acts_F = vec_dict["diff_acts_D"]
+            mu = vec_dict["mu"]
+            ablation_features_dict[layer] = (acts_F, None, None, mu)
+
+
+        handles = []
+
+        for layer_idx, (
+            encoder_vectors,
+            decoder_vectors,
+            scales,
+            encoder_biases,
+        ) in ablation_features_dict.items():
+            ablation_hook = intervention_hooks.get_ablation_hook(
+                "projection_ablations",
+                encoder_vectors,
+                decoder_vectors,
+                scales,
+                encoder_biases,
+            )
+
+            submodule = model_utils.get_submodule(model, layer_idx)
+            handle = submodule.register_forward_hook(ablation_hook)
+            handles.append(handle)
 
     try:
         for batch in tqdm(dataloader, desc="Processing prompts"):
@@ -270,8 +288,9 @@ def run_inference_transformers(
             for i, idx in enumerate(idx_batch):
                 prompt_dicts[idx].response = response[i]
     finally:
-        if ablation_features is not None:
-            handle.remove()
+        if handles is not None:
+            for handle in handles:
+                handle.remove()
 
     return prompt_dicts
 

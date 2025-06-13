@@ -187,3 +187,5 @@ openai_api_key.txt
 *images*
 *job_description.json
 *test_output*
+*.pkl
+*.zip
